@@ -992,7 +992,14 @@ def download_selected():
 
                 file_ext = server_file_ext_only.lower()
 
-                pdf_target_clean_base = re.sub(r"[^\w\-_.,() ]", "_", os.path.splitext(base_fn_dl)[0])[:80].strip()
+                pdf_target_clean_base = re.sub(
+                    r"[^\w\-_.,() ]",
+                    "_",
+                    os.path.splitext(base_fn_dl)[0],
+                )
+                pdf_target_clean_base = (
+                    re.sub(r"_+", "_", pdf_target_clean_base).strip(" _")[:80]
+                )
                 if not pdf_target_clean_base:
                     pdf_target_clean_base = f"unbenannte_datei_{link_idx + 1}"
 
