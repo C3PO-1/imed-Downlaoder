@@ -1,363 +1,83 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import threading
+from __future__ import annotations
+
+import json
 import os
-import time
 import re
 import subprocess
+import sys
 import tempfile
-import json
+import time
+import traceback
+from dataclasses import dataclass
+
+import msoffcrypto
 import requests
+from PyPDF2 import PdfReader, PdfWriter
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QProgressBar,
+    QRadioButton,
+    QScrollArea,
+    QSizePolicy,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.chrome.options import Options
-# HINZUGEFÜGTE IMPORTE
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import msoffcrypto
-from PyPDF2 import PdfReader, PdfWriter
-from platform import system
-import traceback  # Für detailliertere Fehlermeldungen
+from selenium.webdriver.support.ui import WebDriverWait
+
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError:  # pragma: no cover - optional dependency
+    ChromeDriverManager = None
 
 CREDENTIALS_PATH = os.path.expanduser("~/.imedcampus_config.json")
-LIBREOFFICE_PATH = "/Applications/LibreOffice.app/Contents/MacOS/soffice"  # Pfad anpassen, falls notwendig
-WAIT_SHORT = 2  # Sekunden warten nach Seitenwechseln
+LIBREOFFICE_PATH = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+WAIT_SHORT = 2
 
-# --- Farbdefinitionen ---
-COLOR_DARK_BLUE = "#004992"
+COLOR_DARK_BLUE = "#0B1B3A"
 COLOR_WHITE = "#FFFFFF"
-COLOR_LIGHT_BLUE_ACCENT = "#E6F0FA"
-COLOR_BUTTON_ACTIVE_BG = "#CCE0FF"
-COLOR_SCROLLBAR_SLIDER = COLOR_WHITE
-COLOR_SCROLLBAR_TROUGH = COLOR_DARK_BLUE
-COLOR_SCROLLBAR_ACTIVE_SLIDER = "#DDDDDD"
-COPYRIGHT_FG_COLOR = "#A0A0A0"
+COLOR_BUTTON_ACTIVE_BG = "#1E335C"
+COLOR_LIGHT_BLUE_ACCENT = "#1C3D6E"
+COLOR_ACCENT_ORANGE = "#FF8C42"
+COPYRIGHT_FG_COLOR = "#9CAAC0"
 
+MAX_LOG_BUFFER_SIZE = 500
+BASE_DOWNLOAD_PATH = os.path.expanduser("~/Downloads/ImedCampus")
 USERNAME = ""
 PASSWORD = ""
-
-root = tk.Tk()
-root.title("ImedCampus Downloader")
-root.config(bg=COLOR_DARK_BLUE)
-root.withdraw()
-
-style = ttk.Style(root)
-try:
-    style.theme_use("clam")
-except tk.TclError:
-    try:
-        style.theme_use("alt")
-    except tk.TclError:
-        style.theme_use("default")
-style.configure(
-    "Horizontal.TProgressbar",
-    troughcolor=COLOR_DARK_BLUE,
-    background=COLOR_WHITE,
-    bordercolor=COLOR_WHITE,
-)
-
-# Explicitly pass master=root to Tkinter variables defined globally
-download_path_var = tk.StringVar(
-    master=root, value=os.path.expanduser("~/Downloads/ImedCampus")
-)
-week_choice_var = tk.StringVar(master=root, value="aktuell")
-convert_var = tk.BooleanVar(master=root, value=True)
-event_links = []
-checkbox_vars = []
-select_all_var = tk.BooleanVar(master=root, value=False)
+MAIN_WINDOW: "MainWindow | None" = None
 
 
-# --- Globale Variablen für das Log-Fenster und Puffer ---
-log_window_instance = None
-log_text_widget_external = None
-log_buffer = []
-MAX_LOG_BUFFER_SIZE = 500  # Maximale Anzahl von Nachrichten im Puffer/Fenster
+@dataclass
+class EventItem:
+    title: str
+    link: str
 
 
-def _on_mousewheel(event, canvas_widget):
-    scroll_factor = 60
-    if system() == "Darwin":
-        canvas_widget.yview_scroll(-1 * event.delta, "units")
-    elif event.num == 4:
-        canvas_widget.yview_scroll(-1, "units")
-    elif event.num == 5:
-        canvas_widget.yview_scroll(1, "units")
-    else:
-        canvas_widget.yview_scroll(int(-1 * (event.delta / scroll_factor)), "units")
-
-
-def browse_folder():
-    path = filedialog.askdirectory(initialdir=download_path_var.get())
-    if path:
-        download_path_var.set(path)
-        BASE_DOWNLOAD_PATH_LABEL.config(text=download_path_var.get())
-
-
-folder_frame = tk.LabelFrame(
-    root,
-    text="Speicherort auswählen",
-    bg=COLOR_DARK_BLUE,
-    fg=COLOR_WHITE,
-    padx=5,
-    pady=5,
-)
-folder_frame.pack(fill="x", padx=10, pady=(10, 0))
-tk.Label(folder_frame, text="Zielordner:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack(
-    side="left", padx=(5, 0), pady=5
-)
-BASE_DOWNLOAD_PATH_LABEL = tk.Label(
-    folder_frame,
-    text=download_path_var.get(),
-    anchor="w",
-    bg=COLOR_DARK_BLUE,
-    fg=COLOR_WHITE,
-)
-BASE_DOWNLOAD_PATH_LABEL.pack(side="left", fill="x", expand=True, padx=(5, 0))
-tk.Button(
-    folder_frame,
-    text="Auswählen …",
-    command=browse_folder,
-    bg=COLOR_WHITE,
-    fg=COLOR_DARK_BLUE,
-    activebackground=COLOR_BUTTON_ACTIVE_BG,
-    relief=tk.FLAT,
-    borderwidth=1,
-    highlightthickness=1,
-    highlightbackground=COLOR_WHITE,
-).pack(side="right", padx=5, pady=5)
-
-week_frame = tk.LabelFrame(
-    root, text="Woche auswählen", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE, padx=5, pady=5
-)
-week_frame.pack(fill="x", padx=10, pady=(5, 0))
-tk.Radiobutton(
-    week_frame,
-    text="Aktuelle Woche",
-    variable=week_choice_var,
-    value="aktuell",
-    bg=COLOR_DARK_BLUE,
-    fg=COLOR_WHITE,
-    selectcolor=COLOR_DARK_BLUE,
-    activebackground=COLOR_DARK_BLUE,
-    activeforeground=COLOR_WHITE,
-    highlightthickness=0,
-).pack(side="left", padx=10, pady=5)
-tk.Radiobutton(
-    week_frame,
-    text="Nächste Woche",
-    variable=week_choice_var,
-    value="naechste",
-    bg=COLOR_DARK_BLUE,
-    fg=COLOR_WHITE,
-    selectcolor=COLOR_DARK_BLUE,
-    activebackground=COLOR_DARK_BLUE,
-    activeforeground=COLOR_WHITE,
-    highlightthickness=0,
-).pack(side="left", padx=10, pady=5)
-
-convert_cb = tk.Checkbutton(
-    root,
-    text="In PDF konvertieren / PDF-Passwort entfernen",
-    variable=convert_var,
-    bg=COLOR_DARK_BLUE,
-    fg=COLOR_WHITE,
-    selectcolor=COLOR_DARK_BLUE,
-    activebackground=COLOR_DARK_BLUE,
-    activeforeground=COLOR_WHITE,
-    highlightthickness=0,
-)
-convert_cb.pack(anchor="w", padx=10, pady=(5, 0))
-
-load_events_button = tk.Button(
-    root,
-    text="Ereignisse laden",
-    state="normal",
-    width=20,
-    bg=COLOR_WHITE,
-    fg=COLOR_DARK_BLUE,
-    activebackground=COLOR_BUTTON_ACTIVE_BG,
-    relief=tk.FLAT,
-    borderwidth=1,
-    highlightthickness=1,
-    highlightbackground=COLOR_WHITE,
-)
-load_events_button.pack(pady=(5, 10))
-
-progress_frame = tk.Frame(root, bg=COLOR_DARK_BLUE)
-progress_frame.pack(fill="x", padx=10, pady=(0, 0))
-progress_label = tk.Label(
-    progress_frame,
-    text="Bitte Zielordner und Woche wählen, danach ‚Ereignisse laden' klicken.",
-    anchor="w",
-    bg=COLOR_DARK_BLUE,
-    fg=COLOR_WHITE,
-)
-progress_label.pack(fill="x")
-progress_bar = ttk.Progressbar(
-    progress_frame,
-    orient="horizontal",
-    length=300,
-    mode="determinate",
-    style="Horizontal.TProgressbar",
-)
-progress_bar.pack(pady=(5, 10))
-
-selection_frame = tk.LabelFrame(
-    root,
-    text="Wähle Ereignisse zum Download",
-    bg=COLOR_DARK_BLUE,
-    fg=COLOR_WHITE,
-    padx=5,
-    pady=5,
-)
-selection_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-canvas = tk.Canvas(selection_frame, bg=COLOR_DARK_BLUE, highlightthickness=0)
-scrollbar = tk.Scrollbar(
-    selection_frame,
-    orient="vertical",
-    command=canvas.yview,
-    bg=COLOR_SCROLLBAR_SLIDER,
-    troughcolor=COLOR_SCROLLBAR_TROUGH,
-    activebackground=COLOR_SCROLLBAR_ACTIVE_SLIDER,
-    relief=tk.FLAT,
-    width=12,
-)
-scrollable_frame = tk.Frame(canvas, bg=COLOR_DARK_BLUE)
-scrollable_frame.bind(
-    "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-)
-canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-canvas.configure(yscrollcommand=scrollbar.set)
-canvas.pack(side="left", fill="both", expand=True)
-scrollbar.pack(side="right", fill="y")
-canvas.bind("<MouseWheel>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-canvas.bind("<Button-4>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-canvas.bind("<Button-5>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-scrollable_frame.bind("<MouseWheel>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-scrollable_frame.bind("<Button-4>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-scrollable_frame.bind("<Button-5>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-
-download_button = tk.Button(
-    root,
-    text="Download Selected",
-    state="disabled",
-    width=20,
-    bg=COLOR_WHITE,
-    fg=COLOR_DARK_BLUE,
-    activebackground=COLOR_BUTTON_ACTIVE_BG,
-    relief=tk.FLAT,
-    borderwidth=1,
-    highlightthickness=1,
-    highlightbackground=COLOR_WHITE,
-)
-download_button.pack(pady=(0, 5))
-
-
-def show_log_window():
-    global log_window_instance, log_text_widget_external, log_buffer
-    if log_window_instance and log_window_instance.winfo_exists():
-        log_window_instance.lift()
-        log_window_instance.focus_set()
-        return
-    log_window_instance = tk.Toplevel(root)
-    log_window_instance.title("Anwendungs-Logs")
-    try:
-        geom = root.geometry()
-        size_part = geom.split("+")[0]
-        log_win_width, log_win_height = map(int, size_part.split("x"))
-        if log_win_width < 200 or log_win_height < 150:
-            raise ValueError("Root window too small")
-    except:
-        log_win_width, log_win_height = 700, 450
-    log_window_instance.geometry(f"{log_win_width}x{log_win_height}")
-    log_window_instance.config(bg=COLOR_DARK_BLUE)
-    ext_log_frame = tk.Frame(log_window_instance, bg=COLOR_DARK_BLUE)
-    ext_log_frame.pack(fill="both", expand=True, padx=10, pady=10)
-    log_text_widget_external = tk.Text(
-        ext_log_frame,
-        state="normal",
-        bg=COLOR_WHITE,
-        fg=COLOR_DARK_BLUE,
-        relief=tk.FLAT,
-        insertbackground=COLOR_DARK_BLUE,
-        wrap=tk.WORD,
-    )
-    log_scrollbar_ext = tk.Scrollbar(
-        ext_log_frame,
-        orient="vertical",
-        command=log_text_widget_external.yview,
-        bg=COLOR_SCROLLBAR_SLIDER,
-        troughcolor=COLOR_SCROLLBAR_TROUGH,
-        activebackground=COLOR_SCROLLBAR_ACTIVE_SLIDER,
-        relief=tk.FLAT,
-        width=12,
-    )
-    log_text_widget_external.configure(yscrollcommand=log_scrollbar_ext.set)
-    log_text_widget_external.pack(side="left", fill="both", expand=True)
-    log_scrollbar_ext.pack(side="right", fill="y")
-    for timestamp_str, message_text in log_buffer:
-        log_text_widget_external.insert(tk.END, f"{timestamp_str} - {message_text}\n")
-    log_text_widget_external.see(tk.END)
-    log_text_widget_external.config(state="disabled")
-
-    def on_log_window_close():
-        global log_window_instance, log_text_widget_external
-        if log_window_instance:
-            log_window_instance.destroy()
-        log_window_instance = None
-        log_text_widget_external = None
-
-    log_window_instance.protocol("WM_DELETE_WINDOW", on_log_window_close)
-
-
-show_logs_button = tk.Button(
-    root,
-    text="Logs anzeigen",
-    command=show_log_window,
-    width=20,
-    bg=COLOR_WHITE,
-    fg=COLOR_DARK_BLUE,
-    activebackground=COLOR_BUTTON_ACTIVE_BG,
-    relief=tk.FLAT,
-    borderwidth=1,
-    highlightthickness=1,
-    highlightbackground=COLOR_WHITE,
-)
-show_logs_button.pack(pady=(0, 10))
-lle_label = tk.Label(
-    root, text="LLE©", font=("Helvetica", 8), fg=COPYRIGHT_FG_COLOR, bg=COLOR_DARK_BLUE
-)
-lle_label.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
-BASE_DOWNLOAD_PATH = download_path_var.get()
-
-
-def log_message(message):
-    root.after(0, lambda: _log_message_thread_safe(message))
-
-
-def _log_message_thread_safe(message):
-    global log_text_widget_external, log_buffer, log_window_instance
+def log_message(message: str) -> None:
     timestamp_str = time.strftime("%H:%M:%S")
-    log_buffer.append((timestamp_str, message))
-    if len(log_buffer) > MAX_LOG_BUFFER_SIZE:
-        log_buffer.pop(0)
-    if (
-        log_text_widget_external
-        and log_window_instance
-        and log_window_instance.winfo_exists()
-    ):
-        log_text_widget_external.config(state="normal")
-        num_lines_in_widget = int(
-            log_text_widget_external.index("end-1c").split(".")[0]
-        )
-        if num_lines_in_widget > MAX_LOG_BUFFER_SIZE + 20:
-            lines_to_delete = num_lines_in_widget - MAX_LOG_BUFFER_SIZE
-            log_text_widget_external.delete("1.0", f"{lines_to_delete + 1}.0")
-        log_text_widget_external.insert(tk.END, f"{timestamp_str} - {message}\n")
-        log_text_widget_external.see(tk.END)
-        log_text_widget_external.config(state="disabled")
     print(f"{timestamp_str} - {message}")
+    if MAIN_WINDOW:
+        MAIN_WINDOW.log_signal.emit(timestamp_str, message)
 
 
 def create_driver() -> webdriver.Chrome:
@@ -366,7 +86,21 @@ def create_driver() -> webdriver.Chrome:
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
-    driver = webdriver.Chrome(options=opts)
+    service: Service | None = None
+    if ChromeDriverManager is not None:
+        try:
+            driver_path = ChromeDriverManager().install()
+            service = Service(driver_path)
+        except Exception as exc:  # pragma: no cover - logging for troubleshooting
+            log_message(
+                "Automatische ChromeDriver-Installation fehlgeschlagen, "
+                f"verwende Standardsuche. Grund: {exc}"
+            )
+    driver = (
+        webdriver.Chrome(service=service, options=opts)
+        if service is not None
+        else webdriver.Chrome(options=opts)
+    )
     driver.implicitly_wait(10)
     return driver
 
@@ -409,202 +143,63 @@ def login(driver: webdriver.Chrome, username: str, password: str) -> bool:
     log_message(f"Login erfolgreich verifiziert. Aktuelle URL: {current_url_lower}")
     return True
 
-# --- NEUE, AKTUALISIERTE FUNKTION ---
+
 def open_schedule(driver: webdriver.Chrome, week_choice: str) -> None:
-    # Definiere eine längere Wartezeit für dynamische Inhalte
-    wait = WebDriverWait(driver, 10) 
-    
+    wait = WebDriverWait(driver, 10)
     driver.get("https://imed-campus.uke.uni-hamburg.de/stundenplan")
-    
-    # Warte, bis die Seite geladen ist (z.B. indem wir auf den Titel des Stundenplans warten)
-    # Passe den Text 'Stundenplan' an, falls der Titel auf der Seite anders lautet.
     try:
         wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Stundenplan')]")))
         log_message("Stundenplan-Seite erfolgreich geladen.")
-    except Exception as e:
-        log_message(f"Warten auf Stundenplan-Seite fehlgeschlagen: {e}")
-        # Beende die Funktion, wenn die Seite nicht richtig lädt
+    except Exception as exc:
+        log_message(f"Warten auf Stundenplan-Seite fehlgeschlagen: {exc}")
         return
-
     if week_choice == "naechste":
         try:
-            # Der korrigierte XPath-Selektor: type='submit' statt 'image'
             next_week_button_xpath = "//input[@name='next_w' and @type='submit']"
-            
-            # Warte, bis der "Nächste Woche"-Button klickbar ist
             next_week_button = wait.until(EC.element_to_be_clickable((By.XPATH, next_week_button_xpath)))
-            
-            # Führe den Klick aus. Ein direkter Klick ist hier oft ausreichend und verständlicher.
             next_week_button.click()
             log_message("✅ Erfolgreich auf 'Nächste Woche' geklickt.")
-            
-            # Kurze Pause, um der Seite Zeit für das Neuladen des Kalenders zu geben.
-            # Man könnte hier auch auf ein spezifisches Element der neuen Woche warten.
-            time.sleep(WAIT_SHORT) 
-            
-        except Exception as enw:
-            log_message(f"❌ Nächste Woche konnte nicht geklickt werden: {enw}")
+            time.sleep(WAIT_SHORT)
+        except Exception as exc:
+            log_message(f"❌ Nächste Woche konnte nicht geklickt werden: {exc}")
 
-def load_saved_credentials():
+
+def load_saved_credentials() -> None:
     global USERNAME, PASSWORD
     if os.path.exists(CREDENTIALS_PATH):
         try:
-            with open(CREDENTIALS_PATH, "r") as f:
-                data = json.load(f)
+            with open(CREDENTIALS_PATH, "r", encoding="utf-8") as credentials_file:
+                data = json.load(credentials_file)
             USERNAME = data.get("username", "")
             PASSWORD = data.get("password", "")
         except Exception:
-            pass
+            USERNAME, PASSWORD = "", ""
 
 
-def save_credentials(username, password):
+def save_credentials(username: str, password: str) -> None:
     try:
-        with open(CREDENTIALS_PATH, "w") as f:
-            json.dump({"username": username, "password": password}, f)
-    except Exception as e:
-        log_message(f"Fehler beim Speichern der Anmeldedaten: {e}")
+        with open(CREDENTIALS_PATH, "w", encoding="utf-8") as credentials_file:
+            json.dump({"username": username, "password": password}, credentials_file)
+    except Exception as exc:
+        log_message(f"Fehler beim Speichern der Anmeldedaten: {exc}")
 
 
-def delete_saved_credentials():
+def delete_saved_credentials() -> None:
     if os.path.exists(CREDENTIALS_PATH):
         try:
             os.remove(CREDENTIALS_PATH)
-        except Exception as e:
-            log_message(f"Fehler beim Löschen der Anmeldedaten: {e}")
+        except Exception as exc:
+            log_message(f"Fehler beim Löschen der Anmeldedaten: {exc}")
 
 
-def show_login_dialog():
-    login_win = tk.Toplevel(root)
-    login_win.title("Login")
-    login_win.geometry("300x240")
-    login_win.resizable(False, False)
-    login_win.grab_set()
-    login_win.config(bg=COLOR_DARK_BLUE)
-    tk.Label(login_win, text="Benutzername:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack(
-        pady=(15, 0)
-    )
-    username_entry = tk.Entry(
-        login_win,
-        bg=COLOR_WHITE,
-        fg=COLOR_DARK_BLUE,
-        insertbackground=COLOR_DARK_BLUE,
-        relief=tk.FLAT,
-        width=30,
-    )
-    username_entry.pack(pady=(0, 10), padx=20, fill="x")
-    tk.Label(login_win, text="Passwort:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack()
-    password_entry = tk.Entry(
-        login_win,
-        show="*",
-        bg=COLOR_WHITE,
-        fg=COLOR_DARK_BLUE,
-        insertbackground=COLOR_DARK_BLUE,
-        relief=tk.FLAT,
-        width=30,
-    )
-    password_entry.pack(pady=(0, 10), padx=20, fill="x")
-    save_var = tk.BooleanVar(
-        value=False
-    )  # This variable is local to the function and generally fine
-    tk.Checkbutton(
-        login_win,
-        text="Anmeldedaten speichern",
-        variable=save_var,
-        bg=COLOR_DARK_BLUE,
-        fg=COLOR_WHITE,
-        selectcolor=COLOR_DARK_BLUE,
-        activebackground=COLOR_DARK_BLUE,
-        activeforeground=COLOR_WHITE,
-        highlightthickness=0,
-    ).pack(pady=5)
-
-    def attempt_login():
-        nonlocal login_win, username_entry, password_entry, save_var
-        uname = username_entry.get().strip()
-        pwd = password_entry.get().strip()
-        if not uname or not pwd:
-            messagebox.showerror(
-                "Fehler",
-                "Benutzername und Passwort dürfen nicht leer sein.",
-                parent=login_win,
-            )
-            return
-        driver = None
-        try:
-            log_message("Login-Versuch gestartet...")
-            driver = create_driver()
-            if not login(driver, uname, pwd):
-                raise Exception("Ungültige Anmeldedaten oder Seite nicht erreichbar")
-        except Exception as e:
-            log_message(f"Login fehlgeschlagen: {e}")
-            messagebox.showerror(
-                "Login fehlgeschlagen",
-                f"Benutzername oder Passwort ungültig oder Seite nicht erreichbar.\nDetails: {e}",
-                parent=login_win,
-            )
-            if driver:
-                driver.quit()
-            return
-        finally:
-            if driver:
-                driver.quit()
-        if save_var.get():
-            save_credentials(uname, pwd)
-        else:
-            delete_saved_credentials()
-        global USERNAME, PASSWORD
-        USERNAME, PASSWORD = uname, pwd
-        login_win.destroy()
-        root.deiconify()
-
-    btn_frame = tk.Frame(login_win, bg=COLOR_DARK_BLUE)
-    btn_frame.pack(pady=15)
-    tk.Button(
-        btn_frame,
-        text="Abbrechen",
-        command=lambda: root.destroy(),
-        bg=COLOR_WHITE,
-        fg=COLOR_DARK_BLUE,
-        activebackground=COLOR_BUTTON_ACTIVE_BG,
-        relief=tk.FLAT,
-        borderwidth=1,
-        highlightthickness=1,
-        highlightbackground=COLOR_WHITE,
-        width=10,
-    ).pack(side="left", padx=10)
-    tk.Button(
-        btn_frame,
-        text="Login",
-        command=attempt_login,
-        bg=COLOR_WHITE,
-        fg=COLOR_DARK_BLUE,
-        activebackground=COLOR_BUTTON_ACTIVE_BG,
-        relief=tk.FLAT,
-        borderwidth=1,
-        highlightthickness=1,
-        highlightbackground=COLOR_WHITE,
-        width=10,
-    ).pack(side="right", padx=10)
-    username_entry.insert(0, USERNAME)
-    password_entry.insert(0, PASSWORD)
-    if USERNAME and PASSWORD:
-        save_var.set(True)
-    login_win.protocol("WM_DELETE_WINDOW", lambda: root.destroy())
-    username_entry.focus_set()
-
-
-def decrypt_office_file(
-    input_path: str, password: str
-) -> tuple[str | None, str | None]:
+def decrypt_office_file(input_path: str, password: str) -> tuple[str | None, str | None]:
     _, ext = os.path.splitext(input_path)
     created_temp_file = None
     try:
-        with open(input_path, "rb") as f_in:
-            office_file = msoffcrypto.OfficeFile(f_in)
+        with open(input_path, "rb") as file_handle:
+            office_file = msoffcrypto.OfficeFile(file_handle)
             if not office_file.is_encrypted():
-                log_message(
-                    f"Datei {os.path.basename(input_path)} ist nicht verschlüsselt."
-                )
+                log_message(f"Datei {os.path.basename(input_path)} ist nicht verschlüsselt.")
                 return input_path, None
             tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext.lower())
             os.close(tmp_fd)
@@ -627,14 +222,12 @@ def decrypt_office_file(
                     )
             if not decryption_success:
                 raise Exception("Alle Entschlüsselungsversuche fehlgeschlagen.")
-            with open(tmp_path, "wb") as f_out:
-                office_file.decrypt(f_out)
-            log_message(
-                f"✅ {os.path.basename(input_path)} -> {os.path.basename(tmp_path)}"
-            )
+            with open(tmp_path, "wb") as out_handle:
+                office_file.decrypt(out_handle)
+            log_message(f"✅ {os.path.basename(input_path)} -> {os.path.basename(tmp_path)}")
             return tmp_path, tmp_path
-    except Exception as e:
-        log_message(f"❌ Entschlüsselung {os.path.basename(input_path)}: {e}")
+    except Exception as exc:
+        log_message(f"❌ Entschlüsselung {os.path.basename(input_path)}: {exc}")
         if created_temp_file and os.path.exists(created_temp_file):
             try:
                 os.remove(created_temp_file)
@@ -645,8 +238,8 @@ def decrypt_office_file(
 
 def handle_password_protected_pdf(pdf_path: str, password: str) -> bool:
     try:
-        with open(pdf_path, "rb") as file:
-            reader = PdfReader(file)
+        with open(pdf_path, "rb") as file_handle:
+            reader = PdfReader(file_handle)
             if not reader.is_encrypted:
                 log_message(f"PDF {os.path.basename(pdf_path)} nicht verschlüsselt.")
                 return True
@@ -660,19 +253,17 @@ def handle_password_protected_pdf(pdf_path: str, password: str) -> bool:
                             f"PDF {os.path.basename(pdf_path)} mit Pwd '{str(pwd_attempt)[:5]}...' entschlüsselt."
                         )
                         break
-                except NotImplementedError as nie:
+                except NotImplementedError as not_impl:
                     log_message(
-                        f"❌ AES-Entschlüsselung für PDF {os.path.basename(pdf_path)} fehlgeschlagen: {nie}. PyCryptodome fehlt möglicherweise."
+                        f"❌ AES-Entschlüsselung für PDF {os.path.basename(pdf_path)} fehlgeschlagen: {not_impl}. PyCryptodome fehlt möglicherweise."
                     )
                     return False
-                except Exception as e_decrypt:
+                except Exception as exc:
                     log_message(
-                        f"Fehler bei Entschlüsselungsversuch für {os.path.basename(pdf_path)} mit Pwd '{str(pwd_attempt)[:5]}...': {e_decrypt}"
+                        f"Fehler bei Entschlüsselungsversuch für {os.path.basename(pdf_path)} mit Pwd '{str(pwd_attempt)[:5]}...': {exc}"
                     )
             if not decrypted:
-                log_message(
-                    f"❌ Passwort für PDF {os.path.basename(pdf_path)} nicht gefunden."
-                )
+                log_message(f"❌ Passwort für PDF {os.path.basename(pdf_path)} nicht gefunden.")
                 return False
             writer = PdfWriter()
             for page in reader.pages:
@@ -681,8 +272,8 @@ def handle_password_protected_pdf(pdf_path: str, password: str) -> bool:
                 writer.write(output_file)
             log_message(f"✅ PDF-Passwort von {os.path.basename(pdf_path)} entfernt.")
             return True
-    except Exception as e:
-        log_message(f"❌ PDF-Passwort-Entfernung {os.path.basename(pdf_path)}: {e}")
+    except Exception as exc:
+        log_message(f"❌ PDF-Passwort-Entfernung {os.path.basename(pdf_path)}: {exc}")
         return False
 
 
@@ -700,9 +291,7 @@ def convert_with_libreoffice(input_path: str, output_dir: str) -> str | None:
     expected_pdf_path = os.path.join(output_dir, f"{base_input_filename}.pdf")
     try:
         if os.path.exists(expected_pdf_path):
-            log_message(
-                f"Entferne existierende Datei: {os.path.basename(expected_pdf_path)}."
-            )
+            log_message(f"Entferne existierende Datei: {os.path.basename(expected_pdf_path)}.")
             os.remove(expected_pdf_path)
         log_message(
             f"Starte LO-Konv.: {os.path.basename(input_path)} -> {os.path.basename(expected_pdf_path)}"
@@ -729,140 +318,86 @@ def convert_with_libreoffice(input_path: str, output_dir: str) -> str | None:
                 f"✅ LO hat PDF erstellt: {os.path.basename(expected_pdf_path)}"
             )
             return expected_pdf_path
-        else:
-            log_message(
-                f"❌ LO-Konv.: {os.path.basename(expected_pdf_path)} nicht gefunden (Exit 0)."
-            )
-            if result.stdout:
-                log_message(f"LO stdout: {result.stdout.strip()[:200]}")
-            if result.stderr:
-                log_message(f"LO stderr: {result.stderr.strip()[:200]}")
-            return None
+        log_message(
+            f"❌ LO-Konv.: {os.path.basename(expected_pdf_path)} nicht gefunden (Exit 0)."
+        )
+        if result.stdout:
+            log_message(f"LO stdout: {result.stdout.strip()[:200]}")
+        if result.stderr:
+            log_message(f"LO stderr: {result.stderr.strip()[:200]}")
+        return None
     except subprocess.TimeoutExpired:
         log_message(f"❌ LO-Konv. Timeout: {os.path.basename(input_path)}")
         return None
-    except Exception as e:
-        log_message(f"❌ LO-Konv. Fehler {os.path.basename(input_path)}: {e}")
+    except Exception as exc:
+        log_message(f"❌ LO-Konv. Fehler {os.path.basename(input_path)}: {exc}")
         return None
 
 
 def convert_to_pdf(
-    input_path: str, password: str = "ukestudi", pdf_target_base_name: str | None = None
+    input_path: str,
+    password: str = "ukestudi",
+    pdf_target_base_name: str | None = None,
 ) -> bool:
     dirname, original_fn_ext = os.path.split(input_path)
     original_base_from_input, original_ext_str = os.path.splitext(original_fn_ext)
-
     actual_final_base_name = (
         pdf_target_base_name if pdf_target_base_name else original_base_from_input
     )
-    if not actual_final_base_name.strip():  # Zusätzlicher Check für leeren Basisnamen
-        actual_final_base_name = f"konvertiert_{int(time.time())}"  # Fallback Name
+    if not actual_final_base_name.strip():
+        actual_final_base_name = f"konvertiert_{int(time.time())}"
         log_message(
-            f"Warnung: PDF-Zielbasisname war leer, Fallback zu {actual_final_base_name}"
+            f"⚠️ Basisname leer, verwende Fallback {actual_final_base_name} für {original_fn_ext}."
         )
-
-    final_pdf_path = os.path.join(dirname, f"{actual_final_base_name}.pdf")
     temp_decrypted_del = None
-
     try:
-        if original_ext_str.lower() == ".pdf":
-            log_message(
-                f"Verarbeite PDF: {original_fn_ext} -> Ziel: {os.path.basename(final_pdf_path)}"
-            )
-
-            password_handled_on_original = handle_password_protected_pdf(
+        conv_input_path = input_path
+        if original_ext_str.lower() in [".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"]:
+            log_message(f"Entschlüssele Office-Datei: {original_fn_ext}...")
+            conv_input_path, temp_decrypted_del = decrypt_office_file(
                 input_path, password
             )
-            if not password_handled_on_original:
-                log_message(f"Passwortbehandlung für {original_fn_ext} fehlgeschlagen.")
-                return False
-
-            if input_path != final_pdf_path:
-                try:
-                    if os.path.exists(final_pdf_path):
-                        log_message(
-                            f"Überschreibe existierende PDF: {os.path.basename(final_pdf_path)}."
-                        )
-                        os.remove(final_pdf_path)
-                    os.rename(input_path, final_pdf_path)
-                    log_message(
-                        f"PDF {original_fn_ext} erfolgreich Pwd-behandelt und umbenannt zu {os.path.basename(final_pdf_path)}."
-                    )
-                except Exception as e_rename:
-                    log_message(
-                        f"❌ Fehler beim Umbenennen von {original_fn_ext} zu {os.path.basename(final_pdf_path)}: {e_rename}"
-                    )
-                    return False
-            else:
-                log_message(
-                    f"PDF {original_fn_ext} erfolgreich Pwd-behandelt (Name beibehalten)."
-                )
-            return True
-
-        conv_input_path = input_path
-        if original_ext_str.lower() in (
-            ".pptx",
-            ".ppsx",
-            ".docx",
-            ".xlsx",
-            ".ppt",
-            ".doc",
-            ".xls",
-            ".rtf",
-        ):
-            log_message(f"Entschlüssele Office-Datei: {original_fn_ext}...")
-            path_to_conv, temp_created = decrypt_office_file(input_path, password)
-            if not path_to_conv:
+            if not conv_input_path:
                 log_message(f"Entschlüsselung von {original_fn_ext} fehlgeschlagen.")
                 return False
-            conv_input_path = path_to_conv
-            if temp_created and temp_created != input_path:
-                temp_decrypted_del = temp_created
-
-        log_message(
-            f"Konvertiere {os.path.basename(conv_input_path)} (aus {original_fn_ext}) zu PDF -> {os.path.basename(final_pdf_path)}..."
-        )
+        if original_ext_str.lower() == ".pdf":
+            log_message(
+                f"Versuche Passwortentfernung für PDF {original_fn_ext} (Passwort: {password})."
+            )
+            return handle_password_protected_pdf(conv_input_path, password)
         created_pdf_lo = convert_with_libreoffice(conv_input_path, dirname)
-
-        if created_pdf_lo:
-            if created_pdf_lo != final_pdf_path:
-                if os.path.exists(final_pdf_path):
-                    log_message(
-                        f"Überschreibe Ziel-PDF: {os.path.basename(final_pdf_path)}."
-                    )
-                    os.remove(final_pdf_path)
-                try:
-                    os.rename(created_pdf_lo, final_pdf_path)
-                    log_message(
-                        f"✅ Erfolgreich konvertiert und umbenannt zu: {os.path.basename(final_pdf_path)}"
-                    )
-                except Exception as er:
-                    log_message(
-                        f"❌ Umbenennen von konvertierter PDF fehlgeschlagen: {os.path.basename(created_pdf_lo)} -> {os.path.basename(final_pdf_path)}: {er}"
-                    )
-                    # SyntaxError fix: Correctly indent try-except for removing created_pdf_lo
-                    if os.path.exists(created_pdf_lo):
-                        try:
-                            os.remove(created_pdf_lo)
-                        except Exception as e_del_lo:
-                            log_message(
-                                f"Konnte fehlerhafte LO PDF nicht löschen: {os.path.basename(created_pdf_lo)} - {e_del_lo}"
-                            )
-                    return False
-            else:
-                log_message(
-                    f"✅ PDF erstellt mit korrektem Namen: {os.path.basename(final_pdf_path)}"
-                )
-            return True
-        else:
+        if not created_pdf_lo or not os.path.exists(created_pdf_lo):
             log_message(
                 f"❌ PDF-Erstellung (LibreOffice) für {original_fn_ext} (aus {os.path.basename(conv_input_path)}) fehlgeschlagen."
             )
             return False
-    except Exception as e:
+        final_pdf_path = os.path.join(dirname, f"{actual_final_base_name}.pdf")
+        if os.path.exists(final_pdf_path):
+            base_name_without_ext = os.path.splitext(actual_final_base_name)[0]
+            final_pdf_path = os.path.join(
+                dirname,
+                f"{base_name_without_ext}_{int(time.time())}.pdf",
+            )
+        try:
+            os.replace(created_pdf_lo, final_pdf_path)
+        except Exception as exc:
+            log_message(
+                f"❌ Umbenennen von konvertierter PDF fehlgeschlagen: {os.path.basename(created_pdf_lo)} -> {os.path.basename(final_pdf_path)}: {exc}"
+            )
+            if os.path.exists(created_pdf_lo):
+                try:
+                    os.remove(created_pdf_lo)
+                except Exception as cleanup_exc:
+                    log_message(
+                        f"Konnte fehlerhafte LO PDF nicht löschen: {os.path.basename(created_pdf_lo)} - {cleanup_exc}"
+                    )
+            return False
         log_message(
-            f"❌ Kritischer Fehler in convert_to_pdf für {original_fn_ext}: {e}"
+            f"✅ PDF erstellt mit korrektem Namen: {os.path.basename(final_pdf_path)}"
         )
+        return True
+    except Exception as exc:
+        log_message(f"❌ Kritischer Fehler in convert_to_pdf für {original_fn_ext}: {exc}")
         log_message(traceback.format_exc())
         return False
     finally:
@@ -872,386 +407,843 @@ def convert_to_pdf(
                 log_message(
                     f"Temporäre entschlüsselte Datei {os.path.basename(temp_decrypted_del)} entfernt."
                 )
-            except Exception as et:
+            except Exception as cleanup_exc:
                 log_message(
-                    f"⚠️ Fehler beim Löschen der temporären Datei {os.path.basename(temp_decrypted_del)}: {et}"
+                    f"⚠️ Fehler beim Löschen der temporären Datei {os.path.basename(temp_decrypted_del)}: {cleanup_exc}"
                 )
 
 
-def fetch_events_wrapper():
-    root.after(0, lambda: load_events_button.config(state="disabled"))
-    root.after(0, lambda: download_button.config(state="disabled"))
-    fetch_events()
-    root.after(0, lambda: load_events_button.config(state="normal"))
+class LoginDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Login")
+        self.setModal(True)
+        self.setFixedWidth(360)
+        self.username = ""
+        self.password = ""
+        self.remember_credentials = False
+        self._build_ui()
 
-
-def start_fetch_thread():
-    for widget in scrollable_frame.winfo_children():
-        widget.destroy()
-    checkbox_vars.clear()
-    progress_label.config(text="Ereignisse werden geladen...")
-    progress_bar.config(value=0, mode="indeterminate")
-    progress_bar.start()
-    root.update_idletasks()
-    threading.Thread(target=fetch_events_wrapper, daemon=True).start()
-
-
-def fetch_events():
-    log_message("Lade Ereignisse...")
-    driver = None
-    try:
-        driver = create_driver()
-        if not login(driver, USERNAME, PASSWORD):
-            root.after(0, lambda: progress_label.config(text="Login fehlgeschlagen."))
-            return
-        open_schedule(driver, week_choice_var.get())
-        events = driver.find_elements(By.CSS_SELECTOR, "a.vatitle")
-        global event_links
-        event_links.clear()
-        for e in events:
-            title = e.text.strip()
-            href = e.get_attribute("href")
-            if not href or not title:
-                continue
-            try:
-                weekday = e.find_element(
-                    By.XPATH, "./ancestor::tr/td[@class='tday']/b"
-                ).text.strip()
-            except Exception:
-                weekday = ""
-            event_links.append((f"{title} ({weekday})" if weekday else title, href))
-    except Exception as e:
-        log_message(f"Ereignisse laden fehlgeschlagen: {e}")
-        root.after(
-            0,
-            lambda: progress_label.config(text=f"Ereignisse laden fehlgeschlagen: {e}"),
+    def _build_ui(self) -> None:
+        font = QFont("Segoe UI", 10)
+        self.setFont(font)
+        self.setStyleSheet(
+            f"""
+            QDialog {{
+                background-color: {COLOR_DARK_BLUE};
+                color: {COLOR_WHITE};
+            }}
+            QLineEdit {{
+                background-color: {COLOR_WHITE};
+                color: {COLOR_DARK_BLUE};
+                border-radius: 6px;
+                padding: 6px 8px;
+            }}
+            QLabel {{
+                color: {COLOR_WHITE};
+                font-weight: 600;
+            }}
+            QCheckBox {{
+                color: {COLOR_WHITE};
+            }}
+            QPushButton {{
+                background-color: {COLOR_WHITE};
+                color: {COLOR_DARK_BLUE};
+                border-radius: 6px;
+                padding: 8px 14px;
+                border: 2px solid transparent;
+            }}
+            QPushButton:hover {{
+                border-color: {COLOR_ACCENT_ORANGE};
+            }}
+            QPushButton:pressed {{
+                background-color: {COLOR_BUTTON_ACTIVE_BG};
+                color: {COLOR_WHITE};
+            }}
+        """
         )
-    finally:
-        if driver:
-            driver.quit()
-        root.after(0, lambda: progress_bar.stop())
-        root.after(0, lambda: progress_bar.config(mode="determinate", value=0))
-    if not event_links:
-        log_message("Keine Ereignisse gefunden.")
-        root.after(0, lambda: progress_label.config(text="Keine Ereignisse gefunden."))
-        return
-    log_message(f"{len(event_links)} Ereignisse gefunden")
-    root.after(0, populate_checkboxes)
-
-
-def populate_checkboxes():
-    for widget in scrollable_frame.winfo_children():
-        widget.destroy()
-    checkbox_vars.clear()
-    # select_all_var is global and already has master=root
-    if not event_links:
-        progress_label.config(text="Keine Ereignisse zum Anzeigen.")
-        download_button.config(state="disabled")
-        return
-    progress_label.config(
-        text=f"{len(event_links)} Ereignisse gefunden. Wähle aus.",
-        bg=COLOR_DARK_BLUE,
-        fg=COLOR_WHITE,
-    )
-    day_button_frame = tk.Frame(scrollable_frame, bg=COLOR_DARK_BLUE)
-    day_button_frame.pack(fill="x", padx=5, pady=(5, 0))
-
-    def create_cmd(wd):
-        return lambda: select_by_weekday(wd)
-
-    for wd_short in ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]:
-        day_btn = tk.Button(
-            day_button_frame,
-            text=wd_short,
-            width=3,
-            command=create_cmd(wd_short),
-            bg=COLOR_WHITE,
-            fg=COLOR_DARK_BLUE,
-            activebackground=COLOR_BUTTON_ACTIVE_BG,
-            relief=tk.FLAT,
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.addWidget(QLabel("Benutzername:"))
+        self.username_edit = QLineEdit(self)
+        self.username_edit.setPlaceholderText("imed\u2026")
+        layout.addWidget(self.username_edit)
+        layout.addWidget(QLabel("Passwort:"))
+        self.password_edit = QLineEdit(self)
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self.password_edit)
+        self.save_checkbox = QCheckBox("Anmeldedaten speichern", self)
+        layout.addWidget(self.save_checkbox)
+        button_box = QDialogButtonBox(self)
+        self.cancel_button = button_box.addButton(
+            "Abbrechen", QDialogButtonBox.ButtonRole.RejectRole
         )
-        day_btn.pack(side="left", padx=2)
-        day_btn.bind("<MouseWheel>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-        day_btn.bind("<Button-4>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-        day_btn.bind("<Button-5>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-    # select_all_var is used by this Checkbutton
-    select_all_cb = tk.Checkbutton(
-        scrollable_frame,
-        text="Alle auswählen",
-        variable=select_all_var,
-        anchor="w",
-        command=lambda: [var.set(select_all_var.get()) for var in checkbox_vars],
-        bg=COLOR_DARK_BLUE,
-        fg=COLOR_WHITE,
-        selectcolor=COLOR_DARK_BLUE,
-        activebackground=COLOR_DARK_BLUE,
-        activeforeground=COLOR_WHITE,
-        highlightthickness=0,
-    )
-    select_all_cb.pack(fill="x", padx=5, pady=(5, 10))
-    select_all_cb.bind("<MouseWheel>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-    select_all_cb.bind("<Button-4>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-    select_all_cb.bind("<Button-5>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-    current_canvas_width = canvas.winfo_width()
-    wraplen = current_canvas_width - 45 if current_canvas_width > 60 else 400
-    for idx, (title, _) in enumerate(event_links):
-        var = tk.BooleanVar(
-            master=root, value=False
-        )  # Also set master for these dynamically created vars
-        cb = tk.Checkbutton(
-            scrollable_frame,
-            text=title,
-            variable=var,
-            anchor="w",
-            wraplength=wraplen,
-            justify="left",
-            bg=COLOR_DARK_BLUE,
-            fg=COLOR_WHITE,
-            selectcolor=COLOR_DARK_BLUE,
-            activebackground=COLOR_DARK_BLUE,
-            activeforeground=COLOR_WHITE,
-            highlightthickness=0,
+        self.login_button = button_box.addButton(
+            "Login", QDialogButtonBox.ButtonRole.AcceptRole
         )
-        cb.pack(fill="x", padx=5, pady=2)
-        checkbox_vars.append(var)
-        cb.bind("<MouseWheel>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-        cb.bind("<Button-4>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-        cb.bind("<Button-5>", lambda e, cw=canvas: _on_mousewheel(e, cw))
-    download_button.config(state="normal")
-    canvas.update_idletasks()
-    canvas.config(scrollregion=canvas.bbox("all"))
-    canvas.itemconfig(canvas_window, width=canvas.winfo_width())
+        layout.addWidget(button_box)
+        self.cancel_button.clicked.connect(self.reject)
+        self.login_button.clicked.connect(self._attempt_login)
+        self.username_edit.setText(USERNAME)
+        self.password_edit.setText(PASSWORD)
+        if USERNAME and PASSWORD:
+            self.save_checkbox.setChecked(True)
+        self.username_edit.setFocus()
 
-
-def select_by_weekday(weekday_short):
-    found = False
-    for idx, (title, _) in enumerate(event_links):
-        if f"({weekday_short})" in title:
-            checkbox_vars[idx].set(True)
-            found = True
-    if not found:
-        log_message(f"Keine Ereignisse für '{weekday_short}' gefunden.")
-
-
-def start_download_thread():
-    progress_bar.config(value=0, mode="determinate")
-    threading.Thread(target=download_selected_wrapper, daemon=True).start()
-
-
-def download_selected_wrapper():
-    root.after(0, lambda: download_button.config(state="disabled"))
-    root.after(0, lambda: load_events_button.config(state="disabled"))
-    try:
-        download_selected()
-    except Exception as e:
-        log_message(f"🚫 Kritischer Fehler im Download-Thread: {e}")
-        log_message(traceback.format_exc())
-        root.after(0, lambda: progress_label.config(text=f"Kritischer Fehler: {e}"))
-    finally:
-        root.after(0, lambda: download_button.config(state="normal"))
-        root.after(0, lambda: load_events_button.config(state="normal"))
-        root.after(0, lambda: progress_bar.config(value=0))
-
-
-def download_selected():
-    selected_indices = [i for i, var in enumerate(checkbox_vars) if var.get()]
-    if not selected_indices:
-        log_message("Keine Ereignisse ausgewählt.")
-        root.after(
-            0, lambda: progress_label.config(text="Keine Ereignisse ausgewählt.")
-        )
-        return
-    log_message(f"Starte Download von {len(selected_indices)} Ereignissen...")
-    root.after(0, lambda: progress_label.config(text="Starte Download..."))
-    driver = None
-    try:
-        driver = create_driver()
-        if not login(driver, USERNAME, PASSWORD):
-            root.after(
-                0,
-                lambda: progress_label.config(text="Login fehlgeschlagen (Download)."),
+    def _attempt_login(self) -> None:
+        uname = self.username_edit.text().strip()
+        pwd = self.password_edit.text().strip()
+        if not uname or not pwd:
+            QMessageBox.critical(
+                self,
+                "Fehler",
+                "Benutzername und Passwort dürfen nicht leer sein.",
             )
             return
-        # WICHTIG: open_schedule hier nicht erneut aufrufen, da der Zustand (aktuelle/nächste Woche)
-        # bereits beim Laden der Events gesetzt wurde. Ein erneuter Aufruf würde die Auswahl
-        # basierend auf der GUI-Einstellung zurücksetzen, was unerwünscht ist, wenn der Nutzer
-        # zwischen Laden und Download die Woche ändert. Die Logik geht davon aus, dass die
-        # event_links korrekt sind.
-        total_selected = len(selected_indices)
-        root.after(0, lambda: progress_bar.config(maximum=total_selected, value=0))
-        global BASE_DOWNLOAD_PATH
-        BASE_DOWNLOAD_PATH = download_path_var.get()
-        os.makedirs(BASE_DOWNLOAD_PATH, exist_ok=True)
-        dl_count, conv_count, fail_conv_count = 0, 0, 0
-        for count, idx in enumerate(selected_indices, start=1):
-            full_title, event_page_link = event_links[idx]
-            safe_title_temp = re.sub(r"[^\w\s\-_.()]", "_", full_title)
-            display_title = (
-                safe_title_temp[:60] + "..."
-                if len(safe_title_temp) > 60
-                else safe_title_temp
+        driver = None
+        self.login_button.setEnabled(False)
+        try:
+            log_message("Login-Versuch gestartet...")
+            driver = create_driver()
+            if not login(driver, uname, pwd):
+                raise Exception("Ungültige Anmeldedaten oder Seite nicht erreichbar")
+        except Exception as exc:
+            log_message(f"Login fehlgeschlagen: {exc}")
+            QMessageBox.critical(
+                self,
+                "Login fehlgeschlagen",
+                f"Benutzername oder Passwort ungültig oder Seite nicht erreichbar.\nDetails: {exc}",
             )
-            log_message(f"Bearbeite ({count}/{total_selected}): {safe_title_temp}")
-            root.after(
-                0,
-                lambda t=display_title, c=count: progress_label.config(
-                    text=f"({c}/{total_selected}) Lade: {t}"
-                ),
-            )
-            root.after(0, lambda v=count: progress_bar.config(value=v))
-            root.update_idletasks()
-            wd_match = re.search(r"\((Mo|Di|Mi|Do|Fr|Sa|So)\)", safe_title_temp)
-            wd_folder = wd_match.group(1) if wd_match else "Unbekannt"
-            event_folder = os.path.join(BASE_DOWNLOAD_PATH, wd_folder)
-            os.makedirs(event_folder, exist_ok=True)
-            driver.execute_script(
-                "window.open(arguments[0], '_blank');", event_page_link
-            )
-            time.sleep(WAIT_SHORT / 2)
-            driver.switch_to.window(driver.window_handles[-1])
-            time.sleep(WAIT_SHORT * 2)
-            fn_title_event = (
-                safe_title_temp.replace(wd_match.group(0), "").strip()
-                if wd_match
-                else safe_title_temp
-            )
-            fn_title_event = re.sub(r"\s+", "_", fn_title_event)
-            fn_title_event = re.sub(r"[^\w\-_.]", "", fn_title_event)[:100]
+            self.login_button.setEnabled(True)
+            if driver:
+                driver.quit()
+            return
+        finally:
+            if driver:
+                driver.quit()
+        self.username = uname
+        self.password = pwd
+        self.remember_credentials = self.save_checkbox.isChecked()
+        self.accept()
 
-            page_dl_links = driver.find_elements(
-                By.XPATH,
-                "//a[contains(@href, '/dl.php?') or contains(@href, 'download.php') or contains(@class, 'download') or contains(@href, '.pdf') or contains(@href, '.pptx') or contains(@href, '.docx') or contains(@href, '.xlsx')]",
-            )
-            if not page_dl_links:
-                log_message(f"Keine Download-Links für {safe_title_temp} gefunden.")
-            sel_cookies = driver.get_cookies()
-            session = requests.Session()
-            for c_sel in sel_cookies:
-                session.cookies.set(c_sel["name"], c_sel["value"])
 
-            for link_idx, link_el in enumerate(page_dl_links):
-                file_url = link_el.get_attribute("href")
-                if not file_url or not file_url.startswith("http"):
-                    if file_url and not file_url.startswith("http"):
-                        file_url = requests.compat.urljoin(driver.current_url, file_url)
-                    else:
-                        continue
-                link_text = link_el.text.strip()
-                server_fn = ""
+class LogWindow(QDialog):
+    def __init__(self, parent: QWidget, logs: list[tuple[str, str]]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Anwendungs-Logs")
+        self.resize(parent.width(), parent.height())
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setStyleSheet(
+            f"""
+            QDialog {{
+                background-color: {COLOR_DARK_BLUE};
+            }}
+            QTextEdit {{
+                background-color: {COLOR_WHITE};
+                color: {COLOR_DARK_BLUE};
+                border-radius: 8px;
+                padding: 10px;
+                font-family: 'Consolas', 'Courier New', monospace;
+            }}
+        """
+        )
+        layout = QVBoxLayout(self)
+        self.text_edit = QTextEdit(self)
+        self.text_edit.setReadOnly(True)
+        layout.addWidget(self.text_edit)
+        self.set_logs(logs)
+
+    def set_logs(self, logs: list[tuple[str, str]]) -> None:
+        self.text_edit.clear()
+        for timestamp_str, message_text in logs:
+            self.text_edit.append(f"{timestamp_str} - {message_text}")
+        self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
+
+    def append_log(self, timestamp_str: str, message_text: str) -> None:
+        self.text_edit.append(f"{timestamp_str} - {message_text}")
+        self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
+
+
+class FetchEventsWorker(QObject):
+    finished = pyqtSignal()
+    events_ready = pyqtSignal(list)
+    progress_text = pyqtSignal(str)
+
+    def __init__(self, username: str, password: str, week_choice: str) -> None:
+        super().__init__()
+        self.username = username
+        self.password = password
+        self.week_choice = week_choice
+
+    def run(self) -> None:
+        driver = None
+        try:
+            log_message("Lade Ereignisse...")
+            driver = create_driver()
+            if not login(driver, self.username, self.password):
+                self.progress_text.emit("Login fehlgeschlagen.")
+                return
+            open_schedule(driver, self.week_choice)
+            events = driver.find_elements(By.CSS_SELECTOR, "a.vatitle")
+            event_links: list[tuple[str, str]] = []
+            for event in events:
+                title = event.text.strip()
+                href = event.get_attribute("href")
+                if not href or not title:
+                    continue
                 try:
-                    head_r = session.head(file_url, allow_redirects=True, timeout=20)
-                    if "Content-Disposition" in head_r.headers:
-                        disp = head_r.headers["Content-Disposition"]
-                        fn_m = re.search(
-                            r'filename\*?=(?:UTF-\d{1,2}\'\')?([^";]+)',
-                            disp,
-                            re.IGNORECASE,
+                    weekday = event.find_element(
+                        By.XPATH, "./ancestor::tr/td[@class='tday']/b"
+                    ).text.strip()
+                except Exception:
+                    weekday = ""
+                display = f"{title} ({weekday})" if weekday else title
+                event_links.append((display, href))
+            if not event_links:
+                log_message("Keine Ereignisse gefunden.")
+                self.progress_text.emit("Keine Ereignisse gefunden.")
+                return
+            log_message(f"{len(event_links)} Ereignisse gefunden")
+            self.events_ready.emit(event_links)
+            self.progress_text.emit(
+                f"{len(event_links)} Ereignisse gefunden. Wähle aus."
+            )
+        except Exception as exc:
+            log_message(f"Ereignisse laden fehlgeschlagen: {exc}")
+            self.progress_text.emit(f"Ereignisse laden fehlgeschlagen: {exc}")
+        finally:
+            if driver:
+                driver.quit()
+            self.finished.emit()
+
+
+class DownloadWorker(QObject):
+    finished = pyqtSignal()
+    progress_text = pyqtSignal(str)
+    progress_range = pyqtSignal(int, int)
+    progress_value = pyqtSignal(int)
+    summary = pyqtSignal(str)
+
+    def __init__(
+        self,
+        events: list[EventItem],
+        download_path: str,
+        convert_enabled: bool,
+        username: str,
+        password: str,
+    ) -> None:
+        super().__init__()
+        self.events = events
+        self.download_path = download_path
+        self.convert_enabled = convert_enabled
+        self.username = username
+        self.password = password
+
+    def run(self) -> None:
+        if not self.events:
+            self.finished.emit()
+            return
+        driver = None
+        try:
+            self.progress_text.emit("Starte Download...")
+            self.progress_range.emit(0, len(self.events))
+            self.progress_value.emit(0)
+            log_message(f"Starte Download von {len(self.events)} Ereignissen...")
+            driver = create_driver()
+            if not login(driver, self.username, self.password):
+                self.progress_text.emit("Login fehlgeschlagen (Download).")
+                return
+            dl_count = 0
+            conv_count = 0
+            fail_conv_count = 0
+            os.makedirs(self.download_path, exist_ok=True)
+            global BASE_DOWNLOAD_PATH
+            BASE_DOWNLOAD_PATH = self.download_path
+            for count, event in enumerate(self.events, start=1):
+                full_title = event.title
+                event_page_link = event.link
+                safe_title_temp = re.sub(r"[^\w\s\-_.()]", "_", full_title)
+                display_title = (
+                    safe_title_temp[:60] + "..."
+                    if len(safe_title_temp) > 60
+                    else safe_title_temp
+                )
+                log_message(f"Bearbeite ({count}/{len(self.events)}): {safe_title_temp}")
+                self.progress_text.emit(
+                    f"({count}/{len(self.events)}) Lade: {display_title}"
+                )
+                wd_match = re.search(r"\((Mo|Di|Mi|Do|Fr|Sa|So)\)", safe_title_temp)
+                wd_folder = wd_match.group(1) if wd_match else "Unbekannt"
+                event_folder = os.path.join(self.download_path, wd_folder)
+                os.makedirs(event_folder, exist_ok=True)
+                driver.execute_script(
+                    "window.open(arguments[0], '_blank');", event_page_link
+                )
+                time.sleep(WAIT_SHORT / 2)
+                driver.switch_to.window(driver.window_handles[-1])
+                time.sleep(WAIT_SHORT * 2)
+                if wd_match:
+                    fn_title_event = (
+                        safe_title_temp.replace(wd_match.group(0), "").strip()
+                    )
+                else:
+                    fn_title_event = safe_title_temp
+                fn_title_event = re.sub(r"\s+", "_", fn_title_event)
+                fn_title_event = re.sub(r"[^\w\-_.]", "", fn_title_event)[:100]
+                page_dl_links = driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(@href, '/dl.php?') or contains(@href, 'download.php') or contains(@class, 'download') or contains(@href, '.pdf') or contains(@href, '.pptx') or contains(@href, '.docx') or contains(@href, '.xlsx')]",
+                )
+                if not page_dl_links:
+                    log_message(
+                        f"Keine Download-Links für {safe_title_temp} gefunden."
+                    )
+                sel_cookies = driver.get_cookies()
+                session = requests.Session()
+                for cookie in sel_cookies:
+                    session.cookies.set(cookie["name"], cookie["value"])
+                for link_idx, link_el in enumerate(page_dl_links):
+                    file_url = link_el.get_attribute("href")
+                    if not file_url or not file_url.startswith("http"):
+                        if file_url and not file_url.startswith("http"):
+                            file_url = requests.compat.urljoin(
+                                driver.current_url, file_url
+                            )
+                        else:
+                            continue
+                    link_text = link_el.text.strip()
+                    server_fn = ""
+                    try:
+                        head_response = session.head(
+                            file_url, allow_redirects=True, timeout=20
                         )
-                        if fn_m:
-                            server_fn = requests.utils.unquote(fn_m.group(1)).strip('"')
-                except requests.exceptions.RequestException as eh:
-                    log_message(f"HEAD-Req. Fehler {file_url}: {eh}")
-
-                base_fn_dl = server_fn or link_text or f"datei_{link_idx + 1}"
-                _, server_file_ext_only = os.path.splitext(base_fn_dl)
-                if not server_file_ext_only and file_url:
-                    _, server_file_ext_only = os.path.splitext(
-                        file_url.split("?")[0].split("#")[0]
+                        if "Content-Disposition" in head_response.headers:
+                            disp = head_response.headers["Content-Disposition"]
+                            filename_match = re.search(
+                                r"filename\*?=(?:UTF-\d{1,2}'')?([^\";]+)",
+                                disp,
+                                re.IGNORECASE,
+                            )
+                            if filename_match:
+                                server_fn = requests.utils.unquote(
+                                    filename_match.group(1)
+                                ).strip('"')
+                    except requests.exceptions.RequestException as exc:
+                        log_message(f"HEAD-Req. Fehler {file_url}: {exc}")
+                    base_fn_dl = server_fn or link_text or f"datei_{link_idx + 1}"
+                    _, server_file_ext_only = os.path.splitext(base_fn_dl)
+                    if not server_file_ext_only and file_url:
+                        _, server_file_ext_only = os.path.splitext(
+                            file_url.split("?")[0].split("#")[0]
+                        )
+                    file_ext = server_file_ext_only.lower()
+                    pdf_target_clean_base = re.sub(
+                        r"[^\w\-_.,() ]",
+                        "_",
+                        os.path.splitext(base_fn_dl)[0],
                     )
-
-                file_ext = server_file_ext_only.lower()
-
-                pdf_target_clean_base = re.sub(
-                    r"[^\w\-_.,() ]",
-                    "_",
-                    os.path.splitext(base_fn_dl)[0],
-                )
-                pdf_target_clean_base = re.sub(r"_+", "_", pdf_target_clean_base).strip(
-                    " _"
-                )[:80]
-                if not pdf_target_clean_base:
-                    pdf_target_clean_base = f"unbenannte_datei_{link_idx + 1}"
-
-                ts = time.strftime("%Y%m%d-%H%M%S")
-                original_download_fn = (
-                    f"{fn_title_event}_{ts}_{pdf_target_clean_base}{file_ext}"
-                )
-                original_download_fn = re.sub(r"_+", "_", original_download_fn).strip(
-                    "_"
-                )[:200]
-                save_path = os.path.join(event_folder, original_download_fn)
-
-                try:
-                    log_message(
-                        f"Lade herunter: {original_download_fn} von {file_url[:70]}..."
+                    pdf_target_clean_base = re.sub(
+                        r"_+", "_", pdf_target_clean_base
+                    ).strip(" _")[:80]
+                    if not pdf_target_clean_base:
+                        pdf_target_clean_base = (
+                            f"unbenannte_datei_{link_idx + 1}"
+                        )
+                    timestamp_str = time.strftime("%Y%m%d-%H%M%S")
+                    original_download_fn = (
+                        f"{fn_title_event}_{timestamp_str}_{pdf_target_clean_base}{file_ext}"
                     )
-                    resp = session.get(file_url, timeout=180)
-                    resp.raise_for_status()
-                    with open(save_path, "wb") as f:
-                        f.write(resp.content)
-                    dl_count += 1
-                    log_message(f"✅ Heruntergeladen: {original_download_fn}")
-                except requests.exceptions.RequestException as er:
-                    log_message(f"❌ Download {original_download_fn}: {er}")
-                    continue
-                except Exception as ew:
-                    log_message(f"❌ Speichern {original_download_fn}: {ew}")
-                    continue
-
-                if (
-                    convert_var.get()
-                    and file_ext
-                    and file_ext.lower()
-                    not in [".zip", ".rar", ".7z", ".gz", ".tar", ".tgz"]
-                ):
-                    log_message(
-                        f"Verarbeite: {original_download_fn} -> Ziel-Basisname für PDF: {pdf_target_clean_base}"
-                    )
-                    conv_ok = convert_to_pdf(
-                        save_path,
-                        "ukestudi",
-                        pdf_target_base_name=pdf_target_clean_base,
-                    )
-                    if conv_ok:
-                        conv_count += 1
-                        if file_ext.lower() != ".pdf":
-                            try:
-                                os.remove(save_path)
-                                log_message(
-                                    f"Originaldatei ({os.path.basename(save_path)}) entfernt nach Konvertierung."
-                                )
-                            except OSError as erem:
-                                log_message(
-                                    f"⚠️ Originaldatei ({os.path.basename(save_path)}) konnte nicht entfernt werden: {erem}"
-                                )
-                    else:
-                        fail_conv_count += 1
+                    original_download_fn = re.sub(
+                        r"_+", "_", original_download_fn
+                    ).strip("_")[:200]
+                    save_path = os.path.join(event_folder, original_download_fn)
+                    try:
                         log_message(
-                            f"Verarbeitung von {original_download_fn} fehlgeschlagen. Originaldatei bleibt (oder ist fehlerhaft)."
+                            f"Lade herunter: {original_download_fn} von {file_url[:70]}..."
                         )
+                        response = session.get(file_url, timeout=180)
+                        response.raise_for_status()
+                        with open(save_path, "wb") as out_file:
+                            out_file.write(response.content)
+                        dl_count += 1
+                        log_message(
+                            f"✅ Heruntergeladen: {original_download_fn}"
+                        )
+                    except requests.exceptions.RequestException as exc:
+                        log_message(f"❌ Download {original_download_fn}: {exc}")
+                        continue
+                    except Exception as exc:
+                        log_message(f"❌ Speichern {original_download_fn}: {exc}")
+                        continue
+                    if (
+                        self.convert_enabled
+                        and file_ext
+                        and file_ext.lower()
+                        not in [".zip", ".rar", ".7z", ".gz", ".tar", ".tgz"]
+                    ):
+                        log_message(
+                            f"Verarbeite: {original_download_fn} -> Ziel-Basisname für PDF: {pdf_target_clean_base}"
+                        )
+                        conv_ok = convert_to_pdf(
+                            save_path,
+                            "ukestudi",
+                            pdf_target_base_name=pdf_target_clean_base,
+                        )
+                        if conv_ok:
+                            conv_count += 1
+                            if file_ext.lower() != ".pdf":
+                                try:
+                                    os.remove(save_path)
+                                    log_message(
+                                        f"Originaldatei ({os.path.basename(save_path)}) entfernt nach Konvertierung."
+                                    )
+                                except OSError as exc:
+                                    log_message(
+                                        f"⚠️ Originaldatei ({os.path.basename(save_path)}) konnte nicht entfernt werden: {exc}"
+                                    )
+                        else:
+                            fail_conv_count += 1
+                            log_message(
+                                f"Verarbeitung von {original_download_fn} fehlgeschlagen. Originaldatei bleibt (oder ist fehlerhaft)."
+                            )
+                if len(driver.window_handles) > 1:
+                    driver.close()
+                    driver.switch_to.window(driver.window_handles[0])
+                    time.sleep(WAIT_SHORT / 4)
+                self.progress_value.emit(count)
+            summary = f"✅ Download beendet! {dl_count} Dateien heruntergeladen."
+            if self.convert_enabled:
+                summary += (
+                    f" {conv_count} verarbeitet/konvertiert, {fail_conv_count} Verarbeitungsfehler."
+                )
+            log_message(summary)
+            self.summary.emit(summary)
+        except Exception as exc:
+            log_message(f"🚫 Fehler im Download: {exc}")
+            log_message(traceback.format_exc())
+            self.progress_text.emit(f"Kritischer Fehler: {exc}")
+        finally:
+            if driver:
+                driver.quit()
+            self.finished.emit()
 
-            if len(driver.window_handles) > 1:
-                driver.close()
-                driver.switch_to.window(driver.window_handles[0])
-                time.sleep(WAIT_SHORT / 4)
-    except Exception as edl:
-        log_message(f"🚫 Fehler im Download: {edl}")
-        log_message(traceback.format_exc())
-    finally:
-        if driver:
-            driver.quit()
-    summary = f"✅ Download beendet! {dl_count} Dateien heruntergeladen."
-    if convert_var.get():
-        summary += f" {conv_count} verarbeitet/konvertiert, {fail_conv_count} Verarbeitungsfehler."
-    log_message(summary)
-    root.after(0, lambda: progress_label.config(text=summary))
-    root.after(0, lambda: root.bell())
+
+class MainWindow(QMainWindow):
+    log_signal = pyqtSignal(str, str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("ImedCampus Downloader")
+        self.resize(1000, 720)
+        self.setMinimumSize(820, 600)
+        self.download_path = os.path.expanduser("~/Downloads/ImedCampus")
+        self.week_choice = "aktuell"
+        self.convert_enabled = True
+        self.event_items: list[EventItem] = []
+        self.checkbox_widgets: list[QCheckBox] = []
+        self.select_all_checkbox: QCheckBox | None = None
+        self.log_buffer: list[tuple[str, str]] = []
+        self.log_window: LogWindow | None = None
+        self.fetch_thread: QThread | None = None
+        self.download_thread: QThread | None = None
+        self._build_ui()
+        self._connect_signals()
+
+    def _build_ui(self) -> None:
+        QApplication.setStyle("Fusion")
+        central_widget = QWidget(self)
+        central_widget.setObjectName("central")
+        self.setCentralWidget(central_widget)
+        central_layout = QVBoxLayout(central_widget)
+        central_layout.setContentsMargins(20, 20, 20, 12)
+        central_layout.setSpacing(16)
+        central_widget.setStyleSheet(
+            f"""
+            QWidget#central {{
+                background-color: {COLOR_DARK_BLUE};
+                color: {COLOR_WHITE};
+                font-family: 'Segoe UI', 'Helvetica Neue', Arial;
+            }}
+            QGroupBox {{
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 14px;
+                margin-top: 18px;
+                padding: 18px;
+                font-weight: 600;
+                color: {COLOR_WHITE};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 8px;
+                color: {COLOR_WHITE};
+            }}
+            QPushButton {{
+                background-color: {COLOR_WHITE};
+                color: {COLOR_DARK_BLUE};
+                border-radius: 10px;
+                padding: 10px 18px;
+                border: 2px solid transparent;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+            }}
+            QPushButton:hover {{
+                border-color: {COLOR_ACCENT_ORANGE};
+            }}
+            QPushButton:pressed {{
+                background-color: {COLOR_BUTTON_ACTIVE_BG};
+                color: {COLOR_WHITE};
+            }}
+            QPushButton:disabled {{
+                background-color: {COLOR_LIGHT_BLUE_ACCENT};
+                color: rgba(255, 255, 255, 0.6);
+            }}
+            QLabel {{
+                color: {COLOR_WHITE};
+            }}
+            QRadioButton, QCheckBox {{
+                color: {COLOR_WHITE};
+            }}
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QProgressBar {{
+                background-color: rgba(18, 44, 87, 0.8);
+                color: {COLOR_WHITE};
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                border-radius: 12px;
+                text-align: center;
+                padding: 2px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {COLOR_WHITE};
+                border-radius: 10px;
+            }}
+        """
+        )
+        # Speicherort
+        path_group = QGroupBox("Speicherort auswählen", self)
+        path_layout = QHBoxLayout(path_group)
+        path_layout.setSpacing(12)
+        self.path_label = QLabel(self.download_path, path_group)
+        self.path_label.setWordWrap(True)
+        self.path_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        browse_button = QPushButton("Auswählen …", path_group)
+        browse_button.clicked.connect(self._choose_download_path)
+        path_layout.addWidget(self.path_label)
+        path_layout.addWidget(browse_button)
+        central_layout.addWidget(path_group)
+        # Woche
+        week_group = QGroupBox("Woche auswählen", self)
+        week_layout = QHBoxLayout(week_group)
+        week_layout.setSpacing(20)
+        self.radio_week_current = QRadioButton("Aktuelle Woche", week_group)
+        self.radio_week_next = QRadioButton("Nächste Woche", week_group)
+        self.radio_week_current.setChecked(True)
+        week_layout.addWidget(self.radio_week_current)
+        week_layout.addWidget(self.radio_week_next)
+        week_layout.addStretch(1)
+        central_layout.addWidget(week_group)
+        # Optionen
+        self.convert_checkbox = QCheckBox(
+            "In PDF konvertieren / PDF-Passwort entfernen", self
+        )
+        self.convert_checkbox.setChecked(True)
+        central_layout.addWidget(self.convert_checkbox)
+        # Aktionen
+        actions_layout = QHBoxLayout()
+        actions_layout.setSpacing(12)
+        self.load_events_button = QPushButton("Ereignisse laden", self)
+        self.download_button = QPushButton("Download Selected", self)
+        self.download_button.setEnabled(False)
+        self.logs_button = QPushButton("Logs anzeigen", self)
+        actions_layout.addWidget(self.load_events_button)
+        actions_layout.addWidget(self.download_button)
+        actions_layout.addWidget(self.logs_button)
+        actions_layout.addStretch(1)
+        central_layout.addLayout(actions_layout)
+        # Progress
+        progress_container = QVBoxLayout()
+        progress_container.setSpacing(6)
+        self.progress_label = QLabel(
+            "Bitte Zielordner und Woche wählen, danach ‚Ereignisse laden' klicken.",
+            self,
+        )
+        self.progress_label.setWordWrap(True)
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        progress_container.addWidget(self.progress_label)
+        progress_container.addWidget(self.progress_bar)
+        central_layout.addLayout(progress_container)
+        # Event Auswahl
+        selection_group = QGroupBox("Wähle Ereignisse zum Download", self)
+        selection_layout = QVBoxLayout(selection_group)
+        selection_layout.setContentsMargins(0, 0, 0, 0)
+        selection_layout.setSpacing(0)
+        self.scroll_area = QScrollArea(selection_group)
+        self.scroll_area.setWidgetResizable(True)
+        self.events_container = QWidget()
+        self.events_container.setStyleSheet("background: transparent;")
+        self.events_layout = QVBoxLayout(self.events_container)
+        self.events_layout.setContentsMargins(16, 20, 16, 16)
+        self.events_layout.setSpacing(10)
+        self.scroll_area.setWidget(self.events_container)
+        selection_layout.addWidget(self.scroll_area)
+        central_layout.addWidget(selection_group, stretch=1)
+        # Footer
+        footer_layout = QHBoxLayout()
+        footer_layout.addStretch(1)
+        copyright_label = QLabel("LLE©", self)
+        copyright_label.setStyleSheet(
+            f"color: {COPYRIGHT_FG_COLOR}; font-size: 11px;"
+        )
+        footer_layout.addWidget(copyright_label)
+        central_layout.addLayout(footer_layout)
+
+    def _connect_signals(self) -> None:
+        self.log_signal.connect(self._handle_log_message)
+        self.radio_week_current.toggled.connect(self._update_week_choice)
+        self.convert_checkbox.toggled.connect(self._update_convert)
+        self.load_events_button.clicked.connect(self.start_fetch_thread)
+        self.download_button.clicked.connect(self.start_download_thread)
+        self.logs_button.clicked.connect(self.show_log_window)
+
+    def _choose_download_path(self) -> None:
+        selected_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Zielordner auswählen",
+            self.download_path,
+        )
+        if selected_dir:
+            self.download_path = selected_dir
+            self.path_label.setText(self.download_path)
+
+    def _update_week_choice(self, checked: bool) -> None:
+        if checked:
+            self.week_choice = "aktuell"
+        else:
+            self.week_choice = "naechste"
+
+    def _update_convert(self, checked: bool) -> None:
+        self.convert_enabled = checked
+
+    def _handle_log_message(self, timestamp_str: str, message_text: str) -> None:
+        self.log_buffer.append((timestamp_str, message_text))
+        if len(self.log_buffer) > MAX_LOG_BUFFER_SIZE:
+            self.log_buffer.pop(0)
+        if self.log_window and self.log_window.isVisible():
+            self.log_window.append_log(timestamp_str, message_text)
+
+    def show_log_window(self) -> None:
+        if self.log_window and self.log_window.isVisible():
+            self.log_window.raise_()
+            self.log_window.activateWindow()
+            return
+        self.log_window = LogWindow(self, self.log_buffer)
+        self.log_window.finished.connect(self._close_log_window)
+        self.log_window.show()
+
+    def _close_log_window(self) -> None:
+        self.log_window = None
+
+    def clear_event_list(self) -> None:
+        while self.events_layout.count():
+            item = self.events_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.checkbox_widgets.clear()
+        self.select_all_checkbox = None
+
+    def populate_events(self) -> None:
+        self.clear_event_list()
+        if not self.event_items:
+            self.progress_label.setText("Keine Ereignisse zum Anzeigen.")
+            self.download_button.setEnabled(False)
+            return
+        day_widget = QWidget(self.events_container)
+        day_layout = QHBoxLayout(day_widget)
+        day_layout.setSpacing(6)
+        day_layout.setContentsMargins(0, 0, 0, 0)
+        weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+        for wd_short in weekdays:
+            day_button = QPushButton(wd_short, day_widget)
+            day_button.setFixedWidth(48)
+            day_button.setStyleSheet(
+                f"background-color: {COLOR_WHITE}; color: {COLOR_DARK_BLUE}; border-radius: 8px;"
+                f"border: 2px solid transparent;"
+                f"padding: 6px 0;"
+            )
+            day_button.clicked.connect(lambda _, w=wd_short: self.select_by_weekday(w))
+            day_layout.addWidget(day_button)
+        day_layout.addStretch(1)
+        self.events_layout.addWidget(day_widget)
+        self.select_all_checkbox = QCheckBox("Alle auswählen", self.events_container)
+        self.select_all_checkbox.setTristate(True)
+        self.select_all_checkbox.stateChanged.connect(self._select_all_changed)
+        self.events_layout.addWidget(self.select_all_checkbox)
+        for item in self.event_items:
+            checkbox = QCheckBox(item.title, self.events_container)
+            checkbox.setWordWrap(True)
+            checkbox.stateChanged.connect(self._sync_select_all)
+            checkbox.setStyleSheet("QCheckBox { font-size: 14px; }")
+            self.events_layout.addWidget(checkbox)
+            self.checkbox_widgets.append(checkbox)
+        self.events_layout.addStretch(1)
+        self.download_button.setEnabled(True)
+
+    def _select_all_changed(self, state: int) -> None:
+        checked = state == Qt.CheckState.Checked
+        for checkbox in self.checkbox_widgets:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(checked)
+            checkbox.blockSignals(False)
+
+    def _sync_select_all(self) -> None:
+        if not self.select_all_checkbox:
+            return
+        all_checked = all(cb.isChecked() for cb in self.checkbox_widgets)
+        any_checked = any(cb.isChecked() for cb in self.checkbox_widgets)
+        if all_checked:
+            self.select_all_checkbox.blockSignals(True)
+            self.select_all_checkbox.setCheckState(Qt.CheckState.Checked)
+            self.select_all_checkbox.blockSignals(False)
+        elif any_checked:
+            self.select_all_checkbox.blockSignals(True)
+            self.select_all_checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+            self.select_all_checkbox.blockSignals(False)
+        else:
+            self.select_all_checkbox.blockSignals(True)
+            self.select_all_checkbox.setCheckState(Qt.CheckState.Unchecked)
+            self.select_all_checkbox.blockSignals(False)
+
+    def select_by_weekday(self, weekday_short: str) -> None:
+        found = False
+        for checkbox, item in zip(self.checkbox_widgets, self.event_items):
+            if f"({weekday_short})" in item.title:
+                checkbox.setChecked(True)
+                found = True
+        if not found:
+            log_message(f"Keine Ereignisse für '{weekday_short}' gefunden.")
+        self._sync_select_all()
+
+    def start_fetch_thread(self) -> None:
+        if not USERNAME or not PASSWORD:
+            QMessageBox.information(
+                self,
+                "Login benötigt",
+                "Bitte zuerst einloggen, bevor Ereignisse geladen werden.",
+            )
+            return
+        self.load_events_button.setEnabled(False)
+        self.download_button.setEnabled(False)
+        self.progress_label.setText("Ereignisse werden geladen...")
+        self.progress_bar.setRange(0, 0)
+        self.clear_event_list()
+        self.fetch_thread = QThread(self)
+        self.fetch_worker = FetchEventsWorker(
+            USERNAME, PASSWORD, self.week_choice
+        )
+        self.fetch_worker.moveToThread(self.fetch_thread)
+        self.fetch_thread.started.connect(self.fetch_worker.run)
+        self.fetch_worker.events_ready.connect(self._on_events_ready)
+        self.fetch_worker.progress_text.connect(self.progress_label.setText)
+        self.fetch_worker.finished.connect(self._on_fetch_finished)
+        self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
+        self.fetch_thread.finished.connect(self.fetch_thread.deleteLater)
+        self.fetch_thread.start()
+
+    def _on_events_ready(self, events: list[tuple[str, str]]) -> None:
+        self.event_items = [EventItem(title, link) for title, link in events]
+        self.populate_events()
+
+    def _on_fetch_finished(self) -> None:
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.load_events_button.setEnabled(True)
+        if self.fetch_thread:
+            thread = self.fetch_thread
+            self.fetch_thread = None
+            thread.quit()
+
+    def start_download_thread(self) -> None:
+        selected_items = [
+            item
+            for item, checkbox in zip(self.event_items, self.checkbox_widgets)
+            if checkbox.isChecked()
+        ]
+        if not selected_items:
+            log_message("Keine Ereignisse ausgewählt.")
+            self.progress_label.setText("Keine Ereignisse ausgewählt.")
+            return
+        self.load_events_button.setEnabled(False)
+        self.download_button.setEnabled(False)
+        self.progress_bar.setRange(0, len(selected_items))
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Starte Download...")
+        self.download_thread = QThread(self)
+        self.download_worker = DownloadWorker(
+            events=selected_items,
+            download_path=self.download_path,
+            convert_enabled=self.convert_enabled,
+            username=USERNAME,
+            password=PASSWORD,
+        )
+        self.download_worker.moveToThread(self.download_thread)
+        self.download_thread.started.connect(self.download_worker.run)
+        self.download_worker.progress_text.connect(self.progress_label.setText)
+        self.download_worker.progress_range.connect(self.progress_bar.setRange)
+        self.download_worker.progress_value.connect(self.progress_bar.setValue)
+        self.download_worker.summary.connect(self._on_download_summary)
+        self.download_worker.finished.connect(self._on_download_finished)
+        self.download_worker.finished.connect(self.download_worker.deleteLater)
+        self.download_thread.finished.connect(self.download_thread.deleteLater)
+        self.download_thread.start()
+
+    def _on_download_summary(self, summary: str) -> None:
+        self.progress_label.setText(summary)
+        QApplication.beep()
+
+    def _on_download_finished(self) -> None:
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.load_events_button.setEnabled(True)
+        self.download_button.setEnabled(True)
+        if self.download_thread:
+            thread = self.download_thread
+            self.download_thread = None
+            thread.quit()
 
 
-load_events_button.config(command=start_fetch_thread)
-download_button.config(command=start_download_thread)
+def show_login_dialog(parent: MainWindow) -> bool:
+    dialog = LoginDialog(parent)
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        global USERNAME, PASSWORD
+        USERNAME, PASSWORD = dialog.username, dialog.password
+        if dialog.remember_credentials:
+            save_credentials(USERNAME, PASSWORD)
+        else:
+            delete_saved_credentials()
+        return True
+    return False
+
+
+def main() -> None:
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    global MAIN_WINDOW
+    MAIN_WINDOW = window
+    load_saved_credentials()
+    if not show_login_dialog(window):
+        sys.exit(0)
+    window.show()
+    sys.exit(app.exec())
+
 
 if __name__ == "__main__":
-    load_saved_credentials()
-    show_login_dialog()
-    root.mainloop()
+    main()
