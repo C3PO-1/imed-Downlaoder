@@ -12,6 +12,9 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
+# HINZUGEFÜGTE IMPORTE
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import msoffcrypto
 from PyPDF2 import PdfReader, PdfWriter
 from platform import system
@@ -19,6 +22,7 @@ import traceback  # Für detailliertere Fehlermeldungen
 
 CREDENTIALS_PATH = os.path.expanduser("~/.imedcampus_config.json")
 LIBREOFFICE_PATH = "/Applications/LibreOffice.app/Contents/MacOS/soffice"  # Pfad anpassen, falls notwendig
+WAIT_SHORT = 2  # Sekunden warten nach Seitenwechseln
 
 # --- Farbdefinitionen ---
 COLOR_DARK_BLUE = "#004992"
@@ -46,10 +50,17 @@ except tk.TclError:
         style.theme_use("alt")
     except tk.TclError:
         style.theme_use("default")
-style.configure("Horizontal.TProgressbar", troughcolor=COLOR_DARK_BLUE, background=COLOR_WHITE, bordercolor=COLOR_WHITE)
+style.configure(
+    "Horizontal.TProgressbar",
+    troughcolor=COLOR_DARK_BLUE,
+    background=COLOR_WHITE,
+    bordercolor=COLOR_WHITE,
+)
 
 # Explicitly pass master=root to Tkinter variables defined globally
-download_path_var = tk.StringVar(master=root, value=os.path.expanduser("~/Downloads/ImedCampus"))
+download_path_var = tk.StringVar(
+    master=root, value=os.path.expanduser("~/Downloads/ImedCampus")
+)
 week_choice_var = tk.StringVar(master=root, value="aktuell")
 convert_var = tk.BooleanVar(master=root, value=True)
 event_links = []
@@ -83,11 +94,24 @@ def browse_folder():
         BASE_DOWNLOAD_PATH_LABEL.config(text=download_path_var.get())
 
 
-folder_frame = tk.LabelFrame(root, text="Speicherort auswählen", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE, padx=5, pady=5)
+folder_frame = tk.LabelFrame(
+    root,
+    text="Speicherort auswählen",
+    bg=COLOR_DARK_BLUE,
+    fg=COLOR_WHITE,
+    padx=5,
+    pady=5,
+)
 folder_frame.pack(fill="x", padx=10, pady=(10, 0))
-tk.Label(folder_frame, text="Zielordner:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack(side="left", padx=(5, 0), pady=5)
+tk.Label(folder_frame, text="Zielordner:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack(
+    side="left", padx=(5, 0), pady=5
+)
 BASE_DOWNLOAD_PATH_LABEL = tk.Label(
-    folder_frame, text=download_path_var.get(), anchor="w", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE
+    folder_frame,
+    text=download_path_var.get(),
+    anchor="w",
+    bg=COLOR_DARK_BLUE,
+    fg=COLOR_WHITE,
 )
 BASE_DOWNLOAD_PATH_LABEL.pack(side="left", fill="x", expand=True, padx=(5, 0))
 tk.Button(
@@ -103,7 +127,9 @@ tk.Button(
     highlightbackground=COLOR_WHITE,
 ).pack(side="right", padx=5, pady=5)
 
-week_frame = tk.LabelFrame(root, text="Woche auswählen", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE, padx=5, pady=5)
+week_frame = tk.LabelFrame(
+    root, text="Woche auswählen", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE, padx=5, pady=5
+)
 week_frame.pack(fill="x", padx=10, pady=(5, 0))
 tk.Radiobutton(
     week_frame,
@@ -169,12 +195,21 @@ progress_label = tk.Label(
 )
 progress_label.pack(fill="x")
 progress_bar = ttk.Progressbar(
-    progress_frame, orient="horizontal", length=300, mode="determinate", style="Horizontal.TProgressbar"
+    progress_frame,
+    orient="horizontal",
+    length=300,
+    mode="determinate",
+    style="Horizontal.TProgressbar",
 )
 progress_bar.pack(pady=(5, 10))
 
 selection_frame = tk.LabelFrame(
-    root, text="Wähle Ereignisse zum Download", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE, padx=5, pady=5
+    root,
+    text="Wähle Ereignisse zum Download",
+    bg=COLOR_DARK_BLUE,
+    fg=COLOR_WHITE,
+    padx=5,
+    pady=5,
 )
 selection_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 canvas = tk.Canvas(selection_frame, bg=COLOR_DARK_BLUE, highlightthickness=0)
@@ -189,7 +224,9 @@ scrollbar = tk.Scrollbar(
     width=12,
 )
 scrollable_frame = tk.Frame(canvas, bg=COLOR_DARK_BLUE)
-scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+scrollable_frame.bind(
+    "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+)
 canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
 canvas.configure(yscrollcommand=scrollbar.set)
 canvas.pack(side="left", fill="both", expand=True)
@@ -288,7 +325,9 @@ show_logs_button = tk.Button(
     highlightbackground=COLOR_WHITE,
 )
 show_logs_button.pack(pady=(0, 10))
-lle_label = tk.Label(root, text="LLE©", font=("Helvetica", 8), fg=COPYRIGHT_FG_COLOR, bg=COLOR_DARK_BLUE)
+lle_label = tk.Label(
+    root, text="LLE©", font=("Helvetica", 8), fg=COPYRIGHT_FG_COLOR, bg=COLOR_DARK_BLUE
+)
 lle_label.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
 BASE_DOWNLOAD_PATH = download_path_var.get()
 
@@ -303,9 +342,15 @@ def _log_message_thread_safe(message):
     log_buffer.append((timestamp_str, message))
     if len(log_buffer) > MAX_LOG_BUFFER_SIZE:
         log_buffer.pop(0)
-    if log_text_widget_external and log_window_instance and log_window_instance.winfo_exists():
+    if (
+        log_text_widget_external
+        and log_window_instance
+        and log_window_instance.winfo_exists()
+    ):
         log_text_widget_external.config(state="normal")
-        num_lines_in_widget = int(log_text_widget_external.index("end-1c").split(".")[0])
+        num_lines_in_widget = int(
+            log_text_widget_external.index("end-1c").split(".")[0]
+        )
         if num_lines_in_widget > MAX_LOG_BUFFER_SIZE + 20:
             lines_to_delete = num_lines_in_widget - MAX_LOG_BUFFER_SIZE
             log_text_widget_external.delete("1.0", f"{lines_to_delete + 1}.0")
@@ -314,6 +359,91 @@ def _log_message_thread_safe(message):
         log_text_widget_external.config(state="disabled")
     print(f"{timestamp_str} - {message}")
 
+
+def create_driver() -> webdriver.Chrome:
+    opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    driver = webdriver.Chrome(options=opts)
+    driver.implicitly_wait(10)
+    return driver
+
+
+def login(driver: webdriver.Chrome, username: str, password: str) -> bool:
+    driver.get("https://imed-campus.uke.uni-hamburg.de/")
+    driver.find_element(By.NAME, "username").send_keys(username)
+    driver.find_element(By.NAME, "password").send_keys(password + Keys.RETURN)
+    time.sleep(WAIT_SHORT)
+    page_src_lower = driver.page_source.lower()
+    current_url_lower = driver.current_url.lower()
+    login_error_indicators = [
+        "falsche anmeldedaten",
+        "benutzername oder passwort ungültig",
+        "login.php",
+        "melde mich an",
+        "anmeldung fehlgeschlagen",
+    ]
+    still_on_login_page = (
+        'name="username"' in page_src_lower and 'name="password"' in page_src_lower
+    ) or "loginform" in page_src_lower
+    successful_landing_page = (
+        "stundenplan" in current_url_lower
+        or "dashboard" in current_url_lower
+        or "persönliche übersicht" in page_src_lower
+    )
+    login_failed_check = (
+        any(indicator in page_src_lower for indicator in login_error_indicators)
+        or any(
+            indicator in current_url_lower
+            for indicator in ["login.php", "login=failed", "credentials/failed"]
+        )
+        or (still_on_login_page and not successful_landing_page)
+    )
+    if login_failed_check and not successful_landing_page:
+        log_message(
+            f"Ungültige Anmeldedaten oder Login-Seite nicht verlassen. URL: {current_url_lower}"
+        )
+        return False
+    log_message(f"Login erfolgreich verifiziert. Aktuelle URL: {current_url_lower}")
+    return True
+
+# --- NEUE, AKTUALISIERTE FUNKTION ---
+def open_schedule(driver: webdriver.Chrome, week_choice: str) -> None:
+    # Definiere eine längere Wartezeit für dynamische Inhalte
+    wait = WebDriverWait(driver, 10) 
+    
+    driver.get("https://imed-campus.uke.uni-hamburg.de/stundenplan")
+    
+    # Warte, bis die Seite geladen ist (z.B. indem wir auf den Titel des Stundenplans warten)
+    # Passe den Text 'Stundenplan' an, falls der Titel auf der Seite anders lautet.
+    try:
+        wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Stundenplan')]")))
+        log_message("Stundenplan-Seite erfolgreich geladen.")
+    except Exception as e:
+        log_message(f"Warten auf Stundenplan-Seite fehlgeschlagen: {e}")
+        # Beende die Funktion, wenn die Seite nicht richtig lädt
+        return
+
+    if week_choice == "naechste":
+        try:
+            # Der korrigierte XPath-Selektor: type='submit' statt 'image'
+            next_week_button_xpath = "//input[@name='next_w' and @type='submit']"
+            
+            # Warte, bis der "Nächste Woche"-Button klickbar ist
+            next_week_button = wait.until(EC.element_to_be_clickable((By.XPATH, next_week_button_xpath)))
+            
+            # Führe den Klick aus. Ein direkter Klick ist hier oft ausreichend und verständlicher.
+            next_week_button.click()
+            log_message("✅ Erfolgreich auf 'Nächste Woche' geklickt.")
+            
+            # Kurze Pause, um der Seite Zeit für das Neuladen des Kalenders zu geben.
+            # Man könnte hier auch auf ein spezifisches Element der neuen Woche warten.
+            time.sleep(WAIT_SHORT) 
+            
+        except Exception as enw:
+            log_message(f"❌ Nächste Woche konnte nicht geklickt werden: {enw}")
 
 def load_saved_credentials():
     global USERNAME, PASSWORD
@@ -350,9 +480,16 @@ def show_login_dialog():
     login_win.resizable(False, False)
     login_win.grab_set()
     login_win.config(bg=COLOR_DARK_BLUE)
-    tk.Label(login_win, text="Benutzername:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack(pady=(15, 0))
+    tk.Label(login_win, text="Benutzername:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack(
+        pady=(15, 0)
+    )
     username_entry = tk.Entry(
-        login_win, bg=COLOR_WHITE, fg=COLOR_DARK_BLUE, insertbackground=COLOR_DARK_BLUE, relief=tk.FLAT, width=30
+        login_win,
+        bg=COLOR_WHITE,
+        fg=COLOR_DARK_BLUE,
+        insertbackground=COLOR_DARK_BLUE,
+        relief=tk.FLAT,
+        width=30,
     )
     username_entry.pack(pady=(0, 10), padx=20, fill="x")
     tk.Label(login_win, text="Passwort:", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE).pack()
@@ -366,7 +503,9 @@ def show_login_dialog():
         width=30,
     )
     password_entry.pack(pady=(0, 10), padx=20, fill="x")
-    save_var = tk.BooleanVar(value=False)  # This variable is local to the function and generally fine
+    save_var = tk.BooleanVar(
+        value=False
+    )  # This variable is local to the function and generally fine
     tk.Checkbutton(
         login_win,
         text="Anmeldedaten speichern",
@@ -384,48 +523,18 @@ def show_login_dialog():
         uname = username_entry.get().strip()
         pwd = password_entry.get().strip()
         if not uname or not pwd:
-            messagebox.showerror("Fehler", "Benutzername und Passwort dürfen nicht leer sein.", parent=login_win)
+            messagebox.showerror(
+                "Fehler",
+                "Benutzername und Passwort dürfen nicht leer sein.",
+                parent=login_win,
+            )
             return
-        chrome_opts = Options()
-        chrome_opts.add_argument("--headless=new")
-        chrome_opts.add_argument("--window-size=1920,1080")
-        chrome_opts.add_argument("--disable-gpu")
-        chrome_opts.add_argument("--no-sandbox")
         driver = None
         try:
             log_message("Login-Versuch gestartet...")
-            driver = webdriver.Chrome(options=chrome_opts)
-            driver.get("https://imed-campus.uke.uni-hamburg.de/")
-            driver.find_element(By.NAME, "username").send_keys(uname)
-            driver.find_element(By.NAME, "password").send_keys(pwd + Keys.RETURN)
-            time.sleep(3.5)
-            page_src_lower = driver.page_source.lower()
-            current_url_lower = driver.current_url.lower()
-            login_error_indicators = [
-                "falsche anmeldedaten",
-                "benutzername oder passwort ungültig",
-                "login.php",
-                "melde mich an",
-                "anmeldung fehlgeschlagen",
-            ]
-            still_on_login_page = (
-                'name="username"' in page_src_lower and 'name="password"' in page_src_lower
-            ) or "loginform" in page_src_lower
-            successful_landing_page = (
-                "stundenplan" in current_url_lower
-                or "dashboard" in current_url_lower
-                or "persönliche übersicht" in page_src_lower
-            )
-            login_failed_check = (
-                any(indicator in page_src_lower for indicator in login_error_indicators)
-                or any(
-                    indicator in current_url_lower for indicator in ["login.php", "login=failed", "credentials/failed"]
-                )
-                or (still_on_login_page and not successful_landing_page)
-            )
-            if login_failed_check and not successful_landing_page:
-                raise Exception(f"Ungültige Anmeldedaten oder Login-Seite nicht verlassen. URL: {current_url_lower}")
-            log_message(f"Login erfolgreich verifiziert. Aktuelle URL: {current_url_lower}")
+            driver = create_driver()
+            if not login(driver, uname, pwd):
+                raise Exception("Ungültige Anmeldedaten oder Seite nicht erreichbar")
         except Exception as e:
             log_message(f"Login fehlgeschlagen: {e}")
             messagebox.showerror(
@@ -435,7 +544,7 @@ def show_login_dialog():
             )
             if driver:
                 driver.quit()
-                return
+            return
         finally:
             if driver:
                 driver.quit()
@@ -484,14 +593,18 @@ def show_login_dialog():
     username_entry.focus_set()
 
 
-def decrypt_office_file(input_path: str, password: str) -> tuple[str | None, str | None]:
+def decrypt_office_file(
+    input_path: str, password: str
+) -> tuple[str | None, str | None]:
     _, ext = os.path.splitext(input_path)
     created_temp_file = None
     try:
         with open(input_path, "rb") as f_in:
             office_file = msoffcrypto.OfficeFile(f_in)
             if not office_file.is_encrypted():
-                log_message(f"Datei {os.path.basename(input_path)} ist nicht verschlüsselt.")
+                log_message(
+                    f"Datei {os.path.basename(input_path)} ist nicht verschlüsselt."
+                )
                 return input_path, None
             tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext.lower())
             os.close(tmp_fd)
@@ -509,12 +622,16 @@ def decrypt_office_file(input_path: str, password: str) -> tuple[str | None, str
                     )
                     break
                 except Exception:
-                    log_message(f"Pwd '{str(pwd_attempt)[:5]}...' für {os.path.basename(input_path)} falsch.")
+                    log_message(
+                        f"Pwd '{str(pwd_attempt)[:5]}...' für {os.path.basename(input_path)} falsch."
+                    )
             if not decryption_success:
                 raise Exception("Alle Entschlüsselungsversuche fehlgeschlagen.")
             with open(tmp_path, "wb") as f_out:
                 office_file.decrypt(f_out)
-            log_message(f"✅ {os.path.basename(input_path)} -> {os.path.basename(tmp_path)}")
+            log_message(
+                f"✅ {os.path.basename(input_path)} -> {os.path.basename(tmp_path)}"
+            )
             return tmp_path, tmp_path
     except Exception as e:
         log_message(f"❌ Entschlüsselung {os.path.basename(input_path)}: {e}")
@@ -553,7 +670,9 @@ def handle_password_protected_pdf(pdf_path: str, password: str) -> bool:
                         f"Fehler bei Entschlüsselungsversuch für {os.path.basename(pdf_path)} mit Pwd '{str(pwd_attempt)[:5]}...': {e_decrypt}"
                     )
             if not decrypted:
-                log_message(f"❌ Passwort für PDF {os.path.basename(pdf_path)} nicht gefunden.")
+                log_message(
+                    f"❌ Passwort für PDF {os.path.basename(pdf_path)} nicht gefunden."
+                )
                 return False
             writer = PdfWriter()
             for page in reader.pages:
@@ -568,30 +687,52 @@ def handle_password_protected_pdf(pdf_path: str, password: str) -> bool:
 
 
 def convert_with_libreoffice(input_path: str, output_dir: str) -> str | None:
-    cmd = [LIBREOFFICE_PATH, "--headless", "--convert-to", "pdf", "--outdir", output_dir, input_path]
+    cmd = [
+        LIBREOFFICE_PATH,
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        output_dir,
+        input_path,
+    ]
     base_input_filename = os.path.splitext(os.path.basename(input_path))[0]
     expected_pdf_path = os.path.join(output_dir, f"{base_input_filename}.pdf")
     try:
         if os.path.exists(expected_pdf_path):
-            log_message(f"Entferne existierende Datei: {os.path.basename(expected_pdf_path)}.")
+            log_message(
+                f"Entferne existierende Datei: {os.path.basename(expected_pdf_path)}."
+            )
             os.remove(expected_pdf_path)
-        log_message(f"Starte LO-Konv.: {os.path.basename(input_path)} -> {os.path.basename(expected_pdf_path)}")
-        result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=90)
+        log_message(
+            f"Starte LO-Konv.: {os.path.basename(input_path)} -> {os.path.basename(expected_pdf_path)}"
+        )
+        result = subprocess.run(
+            cmd, check=False, capture_output=True, text=True, timeout=90
+        )
         if result.returncode != 0:
-            log_message(f"❌ LO-Konv. {os.path.basename(input_path)} (Exit: {result.returncode}).")
+            log_message(
+                f"❌ LO-Konv. {os.path.basename(input_path)} (Exit: {result.returncode})."
+            )
             if result.stdout:
                 log_message(f"LO stdout: {result.stdout.strip()[:200]}")
             if result.stderr:
                 log_message(f"LO stderr: {result.stderr.strip()[:200]}")
             if os.path.exists(expected_pdf_path):
-                log_message(f"⚠️ Fehlerhafte PDF {os.path.basename(expected_pdf_path)} wird gelöscht.")
+                log_message(
+                    f"⚠️ Fehlerhafte PDF {os.path.basename(expected_pdf_path)} wird gelöscht."
+                )
                 os.remove(expected_pdf_path)
             return None
         if os.path.exists(expected_pdf_path):
-            log_message(f"✅ LO hat PDF erstellt: {os.path.basename(expected_pdf_path)}")
+            log_message(
+                f"✅ LO hat PDF erstellt: {os.path.basename(expected_pdf_path)}"
+            )
             return expected_pdf_path
         else:
-            log_message(f"❌ LO-Konv.: {os.path.basename(expected_pdf_path)} nicht gefunden (Exit 0).")
+            log_message(
+                f"❌ LO-Konv.: {os.path.basename(expected_pdf_path)} nicht gefunden (Exit 0)."
+            )
             if result.stdout:
                 log_message(f"LO stdout: {result.stdout.strip()[:200]}")
             if result.stderr:
@@ -605,23 +746,33 @@ def convert_with_libreoffice(input_path: str, output_dir: str) -> str | None:
         return None
 
 
-def convert_to_pdf(input_path: str, password: str = "ukestudi", pdf_target_base_name: str | None = None) -> bool:
+def convert_to_pdf(
+    input_path: str, password: str = "ukestudi", pdf_target_base_name: str | None = None
+) -> bool:
     dirname, original_fn_ext = os.path.split(input_path)
     original_base_from_input, original_ext_str = os.path.splitext(original_fn_ext)
 
-    actual_final_base_name = pdf_target_base_name if pdf_target_base_name else original_base_from_input
+    actual_final_base_name = (
+        pdf_target_base_name if pdf_target_base_name else original_base_from_input
+    )
     if not actual_final_base_name.strip():  # Zusätzlicher Check für leeren Basisnamen
         actual_final_base_name = f"konvertiert_{int(time.time())}"  # Fallback Name
-        log_message(f"Warnung: PDF-Zielbasisname war leer, Fallback zu {actual_final_base_name}")
+        log_message(
+            f"Warnung: PDF-Zielbasisname war leer, Fallback zu {actual_final_base_name}"
+        )
 
     final_pdf_path = os.path.join(dirname, f"{actual_final_base_name}.pdf")
     temp_decrypted_del = None
 
     try:
         if original_ext_str.lower() == ".pdf":
-            log_message(f"Verarbeite PDF: {original_fn_ext} -> Ziel: {os.path.basename(final_pdf_path)}")
+            log_message(
+                f"Verarbeite PDF: {original_fn_ext} -> Ziel: {os.path.basename(final_pdf_path)}"
+            )
 
-            password_handled_on_original = handle_password_protected_pdf(input_path, password)
+            password_handled_on_original = handle_password_protected_pdf(
+                input_path, password
+            )
             if not password_handled_on_original:
                 log_message(f"Passwortbehandlung für {original_fn_ext} fehlgeschlagen.")
                 return False
@@ -629,7 +780,9 @@ def convert_to_pdf(input_path: str, password: str = "ukestudi", pdf_target_base_
             if input_path != final_pdf_path:
                 try:
                     if os.path.exists(final_pdf_path):
-                        log_message(f"Überschreibe existierende PDF: {os.path.basename(final_pdf_path)}.")
+                        log_message(
+                            f"Überschreibe existierende PDF: {os.path.basename(final_pdf_path)}."
+                        )
                         os.remove(final_pdf_path)
                     os.rename(input_path, final_pdf_path)
                     log_message(
@@ -641,11 +794,22 @@ def convert_to_pdf(input_path: str, password: str = "ukestudi", pdf_target_base_
                     )
                     return False
             else:
-                log_message(f"PDF {original_fn_ext} erfolgreich Pwd-behandelt (Name beibehalten).")
+                log_message(
+                    f"PDF {original_fn_ext} erfolgreich Pwd-behandelt (Name beibehalten)."
+                )
             return True
 
         conv_input_path = input_path
-        if original_ext_str.lower() in (".pptx", ".ppsx", ".docx", ".xlsx", ".ppt", ".doc", ".xls", ".rtf"):
+        if original_ext_str.lower() in (
+            ".pptx",
+            ".ppsx",
+            ".docx",
+            ".xlsx",
+            ".ppt",
+            ".doc",
+            ".xls",
+            ".rtf",
+        ):
             log_message(f"Entschlüssele Office-Datei: {original_fn_ext}...")
             path_to_conv, temp_created = decrypt_office_file(input_path, password)
             if not path_to_conv:
@@ -663,11 +827,15 @@ def convert_to_pdf(input_path: str, password: str = "ukestudi", pdf_target_base_
         if created_pdf_lo:
             if created_pdf_lo != final_pdf_path:
                 if os.path.exists(final_pdf_path):
-                    log_message(f"Überschreibe Ziel-PDF: {os.path.basename(final_pdf_path)}.")
+                    log_message(
+                        f"Überschreibe Ziel-PDF: {os.path.basename(final_pdf_path)}."
+                    )
                     os.remove(final_pdf_path)
                 try:
                     os.rename(created_pdf_lo, final_pdf_path)
-                    log_message(f"✅ Erfolgreich konvertiert und umbenannt zu: {os.path.basename(final_pdf_path)}")
+                    log_message(
+                        f"✅ Erfolgreich konvertiert und umbenannt zu: {os.path.basename(final_pdf_path)}"
+                    )
                 except Exception as er:
                     log_message(
                         f"❌ Umbenennen von konvertierter PDF fehlgeschlagen: {os.path.basename(created_pdf_lo)} -> {os.path.basename(final_pdf_path)}: {er}"
@@ -682,7 +850,9 @@ def convert_to_pdf(input_path: str, password: str = "ukestudi", pdf_target_base_
                             )
                     return False
             else:
-                log_message(f"✅ PDF erstellt mit korrektem Namen: {os.path.basename(final_pdf_path)}")
+                log_message(
+                    f"✅ PDF erstellt mit korrektem Namen: {os.path.basename(final_pdf_path)}"
+                )
             return True
         else:
             log_message(
@@ -690,16 +860,22 @@ def convert_to_pdf(input_path: str, password: str = "ukestudi", pdf_target_base_
             )
             return False
     except Exception as e:
-        log_message(f"❌ Kritischer Fehler in convert_to_pdf für {original_fn_ext}: {e}")
+        log_message(
+            f"❌ Kritischer Fehler in convert_to_pdf für {original_fn_ext}: {e}"
+        )
         log_message(traceback.format_exc())
         return False
     finally:
         if temp_decrypted_del and os.path.exists(temp_decrypted_del):
             try:
                 os.remove(temp_decrypted_del)
-                log_message(f"Temporäre entschlüsselte Datei {os.path.basename(temp_decrypted_del)} entfernt.")
+                log_message(
+                    f"Temporäre entschlüsselte Datei {os.path.basename(temp_decrypted_del)} entfernt."
+                )
             except Exception as et:
-                log_message(f"⚠️ Fehler beim Löschen der temporären Datei {os.path.basename(temp_decrypted_del)}: {et}")
+                log_message(
+                    f"⚠️ Fehler beim Löschen der temporären Datei {os.path.basename(temp_decrypted_del)}: {et}"
+                )
 
 
 def fetch_events_wrapper():
@@ -722,35 +898,13 @@ def start_fetch_thread():
 
 def fetch_events():
     log_message("Lade Ereignisse...")
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
     driver = None
     try:
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.get("https://imed-campus.uke.uni-hamburg.de/")
-        driver.find_element(By.NAME, "username").send_keys(USERNAME)
-        driver.find_element(By.NAME, "password").send_keys(PASSWORD + Keys.RETURN)
-        time.sleep(3.5)
-        if any(
-            indicator in driver.current_url.lower() for indicator in ["login.php", "login=failed", "credentials/failed"]
-        ):
-            log_message("Login fehlgeschlagen (fetch_events).")
+        driver = create_driver()
+        if not login(driver, USERNAME, PASSWORD):
             root.after(0, lambda: progress_label.config(text="Login fehlgeschlagen."))
-            driver.quit()
             return
-        driver.get("https://imed-campus.uke.uni-hamburg.de/stundenplan")
-        time.sleep(3.5)
-        if week_choice_var.get() == "naechste":
-            try:
-                driver.execute_script(
-                    "arguments[0].click();", driver.find_element(By.XPATH, "//input[@name='next_w' and @type='image']")
-                )
-                time.sleep(3.5)
-            except Exception as enw:
-                log_message(f"Nächste Woche nicht geklickt: {enw}")
+        open_schedule(driver, week_choice_var.get())
         events = driver.find_elements(By.CSS_SELECTOR, "a.vatitle")
         global event_links
         event_links.clear()
@@ -760,13 +914,18 @@ def fetch_events():
             if not href or not title:
                 continue
             try:
-                weekday = e.find_element(By.XPATH, "./ancestor::tr/td[@class='tday']/b").text.strip()
+                weekday = e.find_element(
+                    By.XPATH, "./ancestor::tr/td[@class='tday']/b"
+                ).text.strip()
             except Exception:
                 weekday = ""
             event_links.append((f"{title} ({weekday})" if weekday else title, href))
     except Exception as e:
         log_message(f"Ereignisse laden fehlgeschlagen: {e}")
-        root.after(0, lambda: progress_label.config(text=f"Ereignisse laden fehlgeschlagen: {e}"))
+        root.after(
+            0,
+            lambda: progress_label.config(text=f"Ereignisse laden fehlgeschlagen: {e}"),
+        )
     finally:
         if driver:
             driver.quit()
@@ -790,7 +949,9 @@ def populate_checkboxes():
         download_button.config(state="disabled")
         return
     progress_label.config(
-        text=f"{len(event_links)} Ereignisse gefunden. Wähle aus.", bg=COLOR_DARK_BLUE, fg=COLOR_WHITE
+        text=f"{len(event_links)} Ereignisse gefunden. Wähle aus.",
+        bg=COLOR_DARK_BLUE,
+        fg=COLOR_WHITE,
     )
     day_button_frame = tk.Frame(scrollable_frame, bg=COLOR_DARK_BLUE)
     day_button_frame.pack(fill="x", padx=5, pady=(5, 0))
@@ -834,7 +995,9 @@ def populate_checkboxes():
     current_canvas_width = canvas.winfo_width()
     wraplen = current_canvas_width - 45 if current_canvas_width > 60 else 400
     for idx, (title, _) in enumerate(event_links):
-        var = tk.BooleanVar(master=root, value=False)  # Also set master for these dynamically created vars
+        var = tk.BooleanVar(
+            master=root, value=False
+        )  # Also set master for these dynamically created vars
         cb = tk.Checkbutton(
             scrollable_frame,
             text=title,
@@ -894,39 +1057,26 @@ def download_selected():
     selected_indices = [i for i, var in enumerate(checkbox_vars) if var.get()]
     if not selected_indices:
         log_message("Keine Ereignisse ausgewählt.")
-        root.after(0, lambda: progress_label.config(text="Keine Ereignisse ausgewählt."))
+        root.after(
+            0, lambda: progress_label.config(text="Keine Ereignisse ausgewählt.")
+        )
         return
     log_message(f"Starte Download von {len(selected_indices)} Ereignissen...")
     root.after(0, lambda: progress_label.config(text="Starte Download..."))
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
     driver = None
     try:
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.get("https://imed-campus.uke.uni-hamburg.de/")
-        driver.find_element(By.NAME, "username").send_keys(USERNAME)
-        driver.find_element(By.NAME, "password").send_keys(PASSWORD + Keys.RETURN)
-        time.sleep(3.5)
-        if any(
-            indicator in driver.current_url.lower() for indicator in ["login.php", "login=failed", "credentials/failed"]
-        ):
-            log_message("Login fehlgeschlagen (Download).")
-            root.after(0, lambda: progress_label.config(text="Login fehlgeschlagen (Download)."))
-            driver.quit()
+        driver = create_driver()
+        if not login(driver, USERNAME, PASSWORD):
+            root.after(
+                0,
+                lambda: progress_label.config(text="Login fehlgeschlagen (Download)."),
+            )
             return
-        driver.get("https://imed-campus.uke.uni-hamburg.de/stundenplan")
-        time.sleep(3.5)
-        if week_choice_var.get() == "naechste":
-            try:
-                driver.execute_script(
-                    "arguments[0].click();", driver.find_element(By.XPATH, "//input[@name='next_w' and @type='image']")
-                )
-                time.sleep(3.5)
-            except Exception:
-                log_message("Warnung: Nächste Woche nicht geklickt (Download).")
+        # WICHTIG: open_schedule hier nicht erneut aufrufen, da der Zustand (aktuelle/nächste Woche)
+        # bereits beim Laden der Events gesetzt wurde. Ein erneuter Aufruf würde die Auswahl
+        # basierend auf der GUI-Einstellung zurücksetzen, was unerwünscht ist, wenn der Nutzer
+        # zwischen Laden und Download die Woche ändert. Die Logik geht davon aus, dass die
+        # event_links korrekt sind.
         total_selected = len(selected_indices)
         root.after(0, lambda: progress_bar.config(maximum=total_selected, value=0))
         global BASE_DOWNLOAD_PATH
@@ -936,10 +1086,17 @@ def download_selected():
         for count, idx in enumerate(selected_indices, start=1):
             full_title, event_page_link = event_links[idx]
             safe_title_temp = re.sub(r"[^\w\s\-_.()]", "_", full_title)
-            display_title = safe_title_temp[:60] + "..." if len(safe_title_temp) > 60 else safe_title_temp
+            display_title = (
+                safe_title_temp[:60] + "..."
+                if len(safe_title_temp) > 60
+                else safe_title_temp
+            )
             log_message(f"Bearbeite ({count}/{total_selected}): {safe_title_temp}")
             root.after(
-                0, lambda t=display_title, c=count: progress_label.config(text=f"({c}/{total_selected}) Lade: {t}")
+                0,
+                lambda t=display_title, c=count: progress_label.config(
+                    text=f"({c}/{total_selected}) Lade: {t}"
+                ),
             )
             root.after(0, lambda v=count: progress_bar.config(value=v))
             root.update_idletasks()
@@ -947,11 +1104,17 @@ def download_selected():
             wd_folder = wd_match.group(1) if wd_match else "Unbekannt"
             event_folder = os.path.join(BASE_DOWNLOAD_PATH, wd_folder)
             os.makedirs(event_folder, exist_ok=True)
-            driver.execute_script("window.open(arguments[0], '_blank');", event_page_link)
-            time.sleep(1.5)
+            driver.execute_script(
+                "window.open(arguments[0], '_blank');", event_page_link
+            )
+            time.sleep(WAIT_SHORT / 2)
             driver.switch_to.window(driver.window_handles[-1])
-            time.sleep(4.5)
-            fn_title_event = safe_title_temp.replace(wd_match.group(0), "").strip() if wd_match else safe_title_temp
+            time.sleep(WAIT_SHORT * 2)
+            fn_title_event = (
+                safe_title_temp.replace(wd_match.group(0), "").strip()
+                if wd_match
+                else safe_title_temp
+            )
             fn_title_event = re.sub(r"\s+", "_", fn_title_event)
             fn_title_event = re.sub(r"[^\w\-_.]", "", fn_title_event)[:100]
 
@@ -979,7 +1142,11 @@ def download_selected():
                     head_r = session.head(file_url, allow_redirects=True, timeout=20)
                     if "Content-Disposition" in head_r.headers:
                         disp = head_r.headers["Content-Disposition"]
-                        fn_m = re.search(r'filename\*?=(?:UTF-\d{1,2}\'\')?([^";]+)', disp, re.IGNORECASE)
+                        fn_m = re.search(
+                            r'filename\*?=(?:UTF-\d{1,2}\'\')?([^";]+)',
+                            disp,
+                            re.IGNORECASE,
+                        )
                         if fn_m:
                             server_fn = requests.utils.unquote(fn_m.group(1)).strip('"')
                 except requests.exceptions.RequestException as eh:
@@ -988,7 +1155,9 @@ def download_selected():
                 base_fn_dl = server_fn or link_text or f"datei_{link_idx + 1}"
                 _, server_file_ext_only = os.path.splitext(base_fn_dl)
                 if not server_file_ext_only and file_url:
-                    _, server_file_ext_only = os.path.splitext(file_url.split("?")[0].split("#")[0])
+                    _, server_file_ext_only = os.path.splitext(
+                        file_url.split("?")[0].split("#")[0]
+                    )
 
                 file_ext = server_file_ext_only.lower()
 
@@ -997,19 +1166,25 @@ def download_selected():
                     "_",
                     os.path.splitext(base_fn_dl)[0],
                 )
-                pdf_target_clean_base = (
-                    re.sub(r"_+", "_", pdf_target_clean_base).strip(" _")[:80]
-                )
+                pdf_target_clean_base = re.sub(r"_+", "_", pdf_target_clean_base).strip(
+                    " _"
+                )[:80]
                 if not pdf_target_clean_base:
                     pdf_target_clean_base = f"unbenannte_datei_{link_idx + 1}"
 
                 ts = time.strftime("%Y%m%d-%H%M%S")
-                original_download_fn = f"{fn_title_event}_{ts}_{pdf_target_clean_base}{file_ext}"
-                original_download_fn = re.sub(r"_+", "_", original_download_fn).strip("_")[:200]
+                original_download_fn = (
+                    f"{fn_title_event}_{ts}_{pdf_target_clean_base}{file_ext}"
+                )
+                original_download_fn = re.sub(r"_+", "_", original_download_fn).strip(
+                    "_"
+                )[:200]
                 save_path = os.path.join(event_folder, original_download_fn)
 
                 try:
-                    log_message(f"Lade herunter: {original_download_fn} von {file_url[:70]}...")
+                    log_message(
+                        f"Lade herunter: {original_download_fn} von {file_url[:70]}..."
+                    )
                     resp = session.get(file_url, timeout=180)
                     resp.raise_for_status()
                     with open(save_path, "wb") as f:
@@ -1026,12 +1201,17 @@ def download_selected():
                 if (
                     convert_var.get()
                     and file_ext
-                    and file_ext.lower() not in [".zip", ".rar", ".7z", ".gz", ".tar", ".tgz"]
+                    and file_ext.lower()
+                    not in [".zip", ".rar", ".7z", ".gz", ".tar", ".tgz"]
                 ):
                     log_message(
                         f"Verarbeite: {original_download_fn} -> Ziel-Basisname für PDF: {pdf_target_clean_base}"
                     )
-                    conv_ok = convert_to_pdf(save_path, "ukestudi", pdf_target_base_name=pdf_target_clean_base)
+                    conv_ok = convert_to_pdf(
+                        save_path,
+                        "ukestudi",
+                        pdf_target_base_name=pdf_target_clean_base,
+                    )
                     if conv_ok:
                         conv_count += 1
                         if file_ext.lower() != ".pdf":
@@ -1053,7 +1233,7 @@ def download_selected():
             if len(driver.window_handles) > 1:
                 driver.close()
                 driver.switch_to.window(driver.window_handles[0])
-                time.sleep(0.5)
+                time.sleep(WAIT_SHORT / 4)
     except Exception as edl:
         log_message(f"🚫 Fehler im Download: {edl}")
         log_message(traceback.format_exc())
