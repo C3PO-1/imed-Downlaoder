@@ -38,10 +38,16 @@ from PyQt6.QtWidgets import (
 )
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError:  # pragma: no cover - optional dependency
+    ChromeDriverManager = None
 
 CREDENTIALS_PATH = os.path.expanduser("~/.imedcampus_config.json")
 LIBREOFFICE_PATH = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
@@ -80,7 +86,21 @@ def create_driver() -> webdriver.Chrome:
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
-    driver = webdriver.Chrome(options=opts)
+    service: Service | None = None
+    if ChromeDriverManager is not None:
+        try:
+            driver_path = ChromeDriverManager().install()
+            service = Service(driver_path)
+        except Exception as exc:  # pragma: no cover - logging for troubleshooting
+            log_message(
+                "Automatische ChromeDriver-Installation fehlgeschlagen, "
+                f"verwende Standardsuche. Grund: {exc}"
+            )
+    driver = (
+        webdriver.Chrome(service=service, options=opts)
+        if service is not None
+        else webdriver.Chrome(options=opts)
+    )
     driver.implicitly_wait(10)
     return driver
 
